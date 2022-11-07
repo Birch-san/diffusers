@@ -3,28 +3,28 @@ import sys, os
 sys.path.insert(1, f'{os.getcwd()}/src')
 
 import torch
-# from diffusers import StableDiffusionPipeline, EulerDiscreteScheduler
-from diffusers import StableDiffusionPipeline, LMSDiscreteScheduler#, KarrasVeScheduler
+from diffusers import StableDiffusionPipeline, EulerDiscreteScheduler
+# from diffusers import StableDiffusionPipeline, LMSDiscreteScheduler#, KarrasVeScheduler
 from PIL import Image
 import time
 
-# eds = EulerDiscreteScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear")
+eds = EulerDiscreteScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear")
 # kve = KarrasVeScheduler(
 #     sigma_max=14.6146,
 #     # sigma_min=0.0936,
 #     sigma_min=0.0292,
 #     s_churn=0.
 # )
-lms = LMSDiscreteScheduler(
-  beta_start=0.00085,
-  beta_end=0.012,
-  beta_schedule="scaled_linear"
-)
+# lms = LMSDiscreteScheduler(
+#   beta_start=0.00085,
+#   beta_end=0.012,
+#   beta_schedule="scaled_linear"
+# )
 
 pipe = StableDiffusionPipeline.from_pretrained(
   "/Users/birch/git/stable-diffusion-v1-4",
   safety_checker=None,
-  #scheduler=eds
+  scheduler=eds,
 )# torch_type=torch.float16, revision="fp16")
 
 tic = time.perf_counter()
@@ -36,7 +36,7 @@ image: Image.Image = pipe(
 	prompt,
 	# guidance_scale=1.,
 	generator=generator,
-  scheduler=lms,
+  # scheduler=lms,
   # scheduler=kve,
   num_inference_steps=8,
 ).images[0]

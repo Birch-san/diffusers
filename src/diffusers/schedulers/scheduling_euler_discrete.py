@@ -111,7 +111,8 @@ class EulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
         # setable values
         self.num_inference_steps = None
         timesteps = np.linspace(0, num_train_timesteps - 1, num_train_timesteps, dtype=float)[::-1].copy()
-        self.timesteps = torch.from_numpy(timesteps)
+        # float64 is better, but MPS only supports float32
+        self.timesteps = torch.from_numpy(timesteps).float()
         self.is_scale_input_called = False
 
     def scale_model_input(
@@ -152,7 +153,8 @@ class EulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
         sigmas = np.interp(timesteps, np.arange(0, len(sigmas)), sigmas)
         sigmas = np.concatenate([sigmas, [0.0]]).astype(np.float32)
         self.sigmas = torch.from_numpy(sigmas).to(device=device)
-        self.timesteps = torch.from_numpy(timesteps).to(device=device)
+        # float64 is better, but MPS only supports float32
+        self.timesteps = torch.from_numpy(timesteps).float().to(device=device)
 
     def step(
         self,
