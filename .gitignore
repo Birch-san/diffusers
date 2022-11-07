@@ -123,7 +123,7 @@ dmypy.json
 
 # vscode
 .vs
-.vscode
+# .vscode
 
 # Pycharm
 .idea
@@ -166,3 +166,5 @@ tags
 .DS_Store
 # RL pipelines may produce mp4 outputs
 *.mp4
+
+/out/
