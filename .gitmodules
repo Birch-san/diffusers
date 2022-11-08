@@ -1,0 +1,3 @@
+[submodule "src/k-diffusion"]
+	path = src/k-diffusion
+	url = https://github.com/Birch-san/k-diffusion
