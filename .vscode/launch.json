@@ -11,7 +11,10 @@
       // "module": "examples.community.play",
       "program": "${workspaceFolder}/examples/community/play.py",
       "console": "integratedTerminal",
-      "justMyCode": false
+      "justMyCode": true,
+      "env": {
+        "PYTORCH_ENABLE_MPS_FALLBACK": "1"
+      }
     }
   ]
 }
