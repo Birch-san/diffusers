@@ -3,13 +3,20 @@ import sys, os
 sys.path.insert(1, f'{os.getcwd()}/src')
 sys.path.insert(1, f'{os.getcwd()}/src/k-diffusion')
 
+# monkey-patch _randn to use CPU random before k-diffusion uses it
+from torchsde._brownian.brownian_interval import _randn
+from torchsde._brownian import brownian_interval
+brownian_interval._randn = lambda size, dtype, device, seed: (
+  _randn(size, dtype, 'cpu' if device.type == 'mps' else device, seed).to(device)
+)
+
 import torch
 from torch import Generator, Tensor, randn, linspace, cumprod, no_grad
 from diffusers.pipelines import StableDiffusionPipeline
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
-from k_diffusion.sampling import sample_heun, get_sigmas_karras
+from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler
 from transformers import CLIPTextModel, PreTrainedTokenizer
 from typing import TypeAlias, Union, List, Optional, Callable, TypedDict
 from PIL import Image
@@ -77,8 +84,8 @@ class CFGDenoiser():
 
 pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
   # "/Users/birch/git/stable-diffusion-v1-4",
-  # 'hakurei/waifu-diffusion',
-  'runwayml/stable-diffusion-v1-5',
+  'hakurei/waifu-diffusion',
+  # 'runwayml/stable-diffusion-v1-5',
   # revision='fp16',
   # torch_dtype=torch.float16,
   safety_checker=None,
@@ -92,6 +99,7 @@ tokenizer: PreTrainedTokenizer = pipe.tokenizer
 unet: UNet2DConditionModel = pipe.unet
 vae: AutoencoderKL = pipe.vae
 
+seed=68673924
 generator = Generator(device='cpu').manual_seed(68673924)
 @no_grad()
 def latents_to_pils(latents: Tensor) -> List[Image.Image]:
@@ -115,7 +123,8 @@ def log_intermediate(payload: KSamplerCallbackPayload) -> None:
   for img in sample_pils:
     img.save(os.path.join(intermediates_path, f"inter.{payload['i']}.png"))
 
-prompt = "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave"
+# prompt = "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave"
+prompt = 'aqua (konosuba), carnelian, general content, one girl, looking at viewer, blue hair, bangs, medium breasts, frills, blue skirt, blue shirt, detached sleeves, long hair, blue eyes, green ribbon, sleeveless shirt, gem, thighhighs under boots, watercolor (medium), traditional media'
 prompts = ['', prompt]
 
 batch_size = 1
@@ -134,10 +143,12 @@ with no_grad():
   unet_k_wrapped = DiffusersSDDenoiser(pipe.unet, alphas_cumprod)
   denoiser = CFGDenoiser(unet_k_wrapped)
 
+  sigma_max=unet_k_wrapped.sigma_max
+  sigma_min=unet_k_wrapped.sigma_min
   sigmas: Tensor = get_sigmas_karras(
     n=15,
-    sigma_max=unet_k_wrapped.sigma_max,
-    sigma_min=unet_k_wrapped.sigma_min,
+    sigma_max=sigma_max,
+    sigma_min=sigma_min,
     rho=7.,
     device=device,
   ).to(unet.dtype)
@@ -147,12 +158,30 @@ with no_grad():
     'cond_scale': 7.5,
   }
   tic = time.perf_counter()
-  latents: Tensor = sample_heun(
+
+   # BrownianTree decides its device and dtype based on this tensor. avoid MPS, since rand Generator cannot be created from it
+  # noise_shape = torch.zeros(latents_shape, device='cpu' if device.type == 'mps' else device, dtype=latents.dtype)
+  noise_sampler = BrownianTreeNoiseSampler(
+    latents,
+    sigma_min=sigma_min,#.to(device=noise_shape.device),
+    sigma_max=sigma_max,#.to(device=noise_shape.device),
+    # there's no requirement that the noise sampler's seed be coupled to the init noise seed;
+    # I'm just re-using it because it's a convenient arbitrary number
+    seed=seed,
+  )
+  # def sample_noise(sigma, sigma_next)
+  # noise_sampler_wrapped = lambda sigma, sigma_next: noise_sampler(
+  #   sigma.to(device=noise_shape.device),
+  #   sigma_next.to(device=noise_shape.device)
+  # )
+  # latents: Tensor = sample_heun(
+  latents: Tensor = sample_dpmpp_2s_ancestral(
     denoiser,
     latents * sigmas[0],
     sigmas,
     extra_args=extra_args,
     # callback=log_intermediate,
+    noise_sampler=noise_sampler,
   )
   pil_images: List[Image.Image] = latents_to_pils(latents)
 
