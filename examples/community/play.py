@@ -137,7 +137,7 @@ latents_shape = (batch_size * num_images_per_prompt, pipe.unet.in_channels, heig
 with no_grad():
   tokens = pipe.tokenizer(prompts, padding="max_length", max_length=tokenizer.model_max_length, return_tensors="pt")
   text_input_ids: Tensor = tokens.input_ids
-  text_embeddings: Tensor = text_encoder(tokens.input_ids.to(device))[0]
+  text_embeddings: Tensor = text_encoder(text_input_ids.to(device))[0]
   uc, c = text_embeddings.chunk(text_embeddings.size(0))
   latents = randn(latents_shape, generator=generator, device='cpu', dtype=unet.dtype).to(device)
 
