@@ -3,8 +3,8 @@ import sys, os
 sys.path.insert(1, f'{os.getcwd()}/src')
 
 import torch
-# from diffusers import StableDiffusionPipeline, EulerDiscreteScheduler
-from diffusers import StableDiffusionPipeline, LMSDiscreteScheduler#, KarrasVeScheduler
+# from diffusers import StableDiffusionPipeline, EulerDiscreteScheduler, KarrasVeScheduler
+from diffusers import StableDiffusionPipeline, LMSDiscreteScheduler
 from PIL import Image
 import time
 
@@ -22,10 +22,13 @@ lms = LMSDiscreteScheduler(
 )
 
 pipe = StableDiffusionPipeline.from_pretrained(
-  "/Users/birch/git/stable-diffusion-v1-4",
+  # "/Users/birch/git/stable-diffusion-v1-4",
+  # 'hakurei/waifu-diffusion',
+  'runwayml/stable-diffusion-v1-5',
+  # revision='fp16',
+  # torch_dtype=torch.float16,
   safety_checker=None,
-  #scheduler=eds
-)# torch_type=torch.float16, revision="fp16")
+)
 
 tic = time.perf_counter()
 pipe = pipe.to("mps")
