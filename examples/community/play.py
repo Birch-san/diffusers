@@ -170,8 +170,8 @@ with no_grad():
     seed=seed,
   )
   # latents: Tensor = sample_heun(
-  # latents: Tensor = sample_dpmpp_2s_ancestral(
-  latents: Tensor = sample_dpmpp_2m(
+  # latents: Tensor = sample_dpmpp_2m(
+  latents: Tensor = sample_dpmpp_2s_ancestral(
     denoiser,
     latents * sigmas[0],
     sigmas,
