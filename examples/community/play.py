@@ -11,9 +11,18 @@ from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
 from k_diffusion.sampling import sample_heun, get_sigmas_karras
 from transformers import CLIPTextModel, PreTrainedTokenizer
-from typing import TypeAlias, Union, List, Optional
+from typing import TypeAlias, Union, List, Optional, Callable, TypedDict
 from PIL import Image
 import time
+
+class KSamplerCallbackPayload(TypedDict):
+  x: Tensor
+  i: int
+  sigma: Tensor
+  sigma_hat: Tensor
+  denoised: Tensor
+
+KSamplerCallback: TypeAlias = Callable[[KSamplerCallbackPayload], None]
 
 DeviceType: TypeAlias = Union[torch.device, str]
 
@@ -84,6 +93,27 @@ unet: UNet2DConditionModel = pipe.unet
 vae: AutoencoderKL = pipe.vae
 
 generator = Generator(device='cpu').manual_seed(68673924)
+@no_grad()
+def latents_to_pils(latents: Tensor) -> List[Image.Image]:
+  latents = 1 / 0.18215 * latents
+
+  images: Tensor = vae.decode(latents).sample
+
+  images = (images / 2 + 0.5).clamp(0, 1)
+
+  # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
+  images = images.cpu().permute(0, 2, 3, 1).float().numpy()
+  images = (images * 255).round().astype("uint8")
+
+  pil_images: List[Image.Image] = [Image.fromarray(image) for image in images]
+  return pil_images
+
+intermediates_path='intermediates'
+os.makedirs(intermediates_path, exist_ok=True)
+def log_intermediate(payload: KSamplerCallbackPayload) -> None:
+  sample_pils: List[Image.Image] = latents_to_pils(payload['denoised'])
+  for img in sample_pils:
+    img.save(os.path.join(intermediates_path, f"inter.{payload['i']}.png"))
 
 prompt = "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave"
 prompts = ['', prompt]
@@ -122,22 +152,15 @@ with no_grad():
     latents * sigmas[0],
     sigmas,
     extra_args=extra_args,
+    # callback=log_intermediate,
   )
-  latents = 1 / 0.18215 * latents
-
-  images: Tensor = vae.decode(latents).sample
-
-  images = (images / 2 + 0.5).clamp(0, 1)
-
-  # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
-  images = images.cpu().permute(0, 2, 3, 1).float().numpy()
-  images = (images * 255).round().astype("uint8")
+  pil_images: List[Image.Image] = latents_to_pils(latents)
 
 toc = time.perf_counter()
 
-sample_path="out"
+sample_path='out'
+os.makedirs(sample_path, exist_ok=True)
 base_count = len(os.listdir(sample_path))
-pil_images: List[Image.Image] = [Image.fromarray(image) for image in images]
 for ix, image in enumerate(pil_images):
   image.save(os.path.join(sample_path, f"{base_count+ix:05}.png"))
 
