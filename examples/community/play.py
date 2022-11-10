@@ -161,21 +161,14 @@ with no_grad():
   }
   tic = time.perf_counter()
 
-   # BrownianTree decides its device and dtype based on this tensor. avoid MPS, since rand Generator cannot be created from it
-  # noise_shape = torch.zeros(latents_shape, device='cpu' if device.type == 'mps' else device, dtype=latents.dtype)
   noise_sampler = BrownianTreeNoiseSampler(
     latents,
-    sigma_min=sigma_min,#.to(device=noise_shape.device),
-    sigma_max=sigma_max,#.to(device=noise_shape.device),
+    sigma_min=sigma_min,
+    sigma_max=sigma_max,
     # there's no requirement that the noise sampler's seed be coupled to the init noise seed;
     # I'm just re-using it because it's a convenient arbitrary number
     seed=seed,
   )
-  # def sample_noise(sigma, sigma_next)
-  # noise_sampler_wrapped = lambda sigma, sigma_next: noise_sampler(
-  #   sigma.to(device=noise_shape.device),
-  #   sigma_next.to(device=noise_shape.device)
-  # )
   # latents: Tensor = sample_heun(
   latents: Tensor = sample_dpmpp_2s_ancestral(
     denoiser,
