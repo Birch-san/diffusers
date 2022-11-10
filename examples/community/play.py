@@ -16,7 +16,7 @@ from diffusers.pipelines import StableDiffusionPipeline
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
-from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler
+from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler, sample_dpm_adaptive, sample_dpmpp_2m
 from transformers import CLIPTextModel, PreTrainedTokenizer
 from typing import TypeAlias, Union, List, Optional, Callable, TypedDict
 from PIL import Image
@@ -170,7 +170,8 @@ with no_grad():
     seed=seed,
   )
   # latents: Tensor = sample_heun(
-  latents: Tensor = sample_dpmpp_2s_ancestral(
+  # latents: Tensor = sample_dpmpp_2s_ancestral(
+  latents: Tensor = sample_dpmpp_2m(
     denoiser,
     latents * sigmas[0],
     sigmas,
@@ -178,6 +179,16 @@ with no_grad():
     # callback=log_intermediate,
     noise_sampler=noise_sampler,
   )
+  # latents: Tensor = sample_dpm_adaptive(
+  #   denoiser,
+  #   latents * sigmas[0],
+  #   sigma_min=sigma_min,
+  #   sigma_max=sigma_max,
+  #   extra_args=extra_args,
+  #   # noise_sampler=noise_sampler,
+  #   rtol=.003125,
+  #   atol=.0004875,
+  # )
   pil_images: List[Image.Image] = latents_to_pils(latents)
 
 toc = time.perf_counter()
