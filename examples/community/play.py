@@ -99,8 +99,6 @@ tokenizer: PreTrainedTokenizer = pipe.tokenizer
 unet: UNet2DConditionModel = pipe.unet
 vae: AutoencoderKL = pipe.vae
 
-seed=68673924
-generator = Generator(device='cpu').manual_seed(68673924)
 @no_grad()
 def latents_to_pils(latents: Tensor) -> List[Image.Image]:
   latents = 1 / 0.18215 * latents
@@ -122,6 +120,10 @@ def log_intermediate(payload: KSamplerCallbackPayload) -> None:
   sample_pils: List[Image.Image] = latents_to_pils(payload['denoised'])
   for img in sample_pils:
     img.save(os.path.join(intermediates_path, f"inter.{payload['i']}.png"))
+
+# seed=68673924
+seed=2178792735
+generator = Generator(device='cpu').manual_seed(seed)
 
 # prompt = "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave"
 prompt = 'aqua (konosuba), carnelian, general content, one girl, looking at viewer, blue hair, bangs, medium breasts, frills, blue skirt, blue shirt, detached sleeves, long hair, blue eyes, green ribbon, sleeveless shirt, gem, thighhighs under boots, watercolor (medium), traditional media'
