@@ -165,5 +165,6 @@ tags
 # DS_Store (MacOS)
 .DS_Store
 
-/out/
+/out*/
+/intermediates/
 /src/k-diffusion
