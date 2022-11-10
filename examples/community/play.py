@@ -21,7 +21,7 @@ lms = LMSDiscreteScheduler(
   beta_schedule="scaled_linear"
 )
 
-pipe = StableDiffusionPipeline.from_pretrained(
+pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
   # "/Users/birch/git/stable-diffusion-v1-4",
   # 'hakurei/waifu-diffusion',
   'runwayml/stable-diffusion-v1-5',
