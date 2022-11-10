@@ -10,6 +10,11 @@ brownian_interval._randn = lambda size, dtype, device, seed: (
   _randn(size, dtype, 'cpu' if device.type == 'mps' else device, seed).to(device)
 )
 
+from k_diffusion import sampling
+sampling.default_noise_sampler = lambda x: (
+  lambda sigma, sigma_next: torch.randn_like(x, device='cpu' if x.device.type == 'mps' else x.device).to(x.device)
+)
+
 import torch
 from torch import Generator, Tensor, randn, linspace, cumprod, no_grad
 from diffusers.pipelines import StableDiffusionPipeline
