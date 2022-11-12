@@ -107,10 +107,8 @@ vae: AutoencoderKL = pipe.vae
 def replace_cross_attention(module: nn.Module) -> None:
   for name, m in module.named_children():
     if isinstance(m, CrossAttention):
-      # is self-attention?
-      if m.to_q.in_features == m.to_k.in_features:
-        mha: MultiheadAttention = to_mha(m)
-        setattr(module, name, mha)
+      mha: MultiheadAttention = to_mha(m)
+      setattr(module, name, mha)
 
 unet.apply(replace_cross_attention)
 
