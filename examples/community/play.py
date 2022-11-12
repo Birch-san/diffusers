@@ -81,12 +81,16 @@ class CFGDenoiser():
   ) -> Tensor:
     if uncond is None or cond_scale == 1.0:
       return self.denoiser(input=x, sigma=sigma, encoder_hidden_states=cond)
-    cond_in = torch.cat([uncond, cond])
-    del uncond, cond
-    x_in = x.expand(cond_in.size(dim=0), -1, -1, -1)
-    del x
-    uncond, cond = self.denoiser(input=x_in, sigma=sigma, encoder_hidden_states=cond_in).chunk(cond_in.size(dim=0))
-    del x_in, cond_in
+    # cond_in = torch.cat([uncond, cond])
+    # del uncond, cond
+    # x_in = x.expand(cond_in.size(dim=0), -1, -1, -1)
+    # del x
+    # uncond, cond = self.denoiser(input=x_in, sigma=sigma, encoder_hidden_states=cond_in).chunk(cond_in.size(dim=0))
+    # del x_in, cond_in
+    # return uncond + (cond - uncond) * cond_scale
+    # I don't currently have batching working with ANE, but this gets around it
+    uncond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=uncond)
+    cond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=cond)
     return uncond + (cond - uncond) * cond_scale
 
 pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
