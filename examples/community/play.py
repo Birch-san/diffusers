@@ -16,9 +16,11 @@ sampling.default_noise_sampler = lambda x: (
 )
 
 import torch
-from torch import Generator, Tensor, randn, linspace, cumprod, no_grad
+from torch import Generator, Tensor, randn, linspace, cumprod, no_grad, nn
+from apple.multihead_attention import MultiHeadAttention
 from diffusers.pipelines import StableDiffusionPipeline
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
+from diffusers.models.attention import CrossAttention, MultiheadAttention, to_mha
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
 from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler, sample_dpm_adaptive, sample_dpmpp_2m
@@ -104,11 +106,92 @@ tokenizer: PreTrainedTokenizer = pipe.tokenizer
 unet: UNet2DConditionModel = pipe.unet
 vae: AutoencoderKL = pipe.vae
 
+class AMHADelegator(MultiHeadAttention):
+  def __init__(
+    self,
+    query_dim: int,
+    cross_attention_dim: Optional[int] = None,
+    heads: int = 8,
+    dim_head: int = 64,
+    dropout: float = 0.0,
+    bias=False,
+  ):
+    inner_dim = dim_head * heads
+    cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
+    # debug
+    self.inner_dim = inner_dim
+    self.embed_dim = inner_dim
+    self.dim_head = dim_head
+    self.heads = heads
+    self.cross_attention_dim = cross_attention_dim
+    super().__init__(
+      embed_dim=inner_dim,
+      n_head=heads,
+      dropout=dropout,
+      bias=bias,
+      batch_first=True,
+      d_qk=cross_attention_dim,
+      d_v=cross_attention_dim,
+      # d_out=cross_attention_dim,
+    )
+  
+  def forward(self, hidden_states: Tensor, context: Optional[Tensor]=None) -> Tensor:
+    # TODO: we're probably undoing a permute from upstream, so just eliminate that
+    hidden_states = hidden_states.permute(0,2,1).unsqueeze(2)
+    context = context.permute(0,2,1).unsqueeze(2) if context is not None else hidden_states
+    out, _ = super().forward(
+      q=hidden_states,
+      k=context,
+      v=context,
+    )
+    out = out.squeeze(2).permute(0,2,1)
+    return out
+
+def linear_to_conv2d(state: Tensor) -> Tensor:
+  """
+  adapts the weights or biases of an nn.Linear to be compatible with an nn.Conv2d
+  by unsqueezing the final dimension twice
+  """
+  # TODO: would this benefit from .contiguous()?
+  return state.view(*state.shape, 1, 1)
+
+def initialize_from_linear(conv: nn.Conv2d, linear: nn.Linear) -> None:
+  """
+  initializes an nn.Conv2d layer with the weights and biases from a nn.Linear layer
+  """
+  conv.weight.data = linear_to_conv2d(linear.weight.data)
+  if linear.bias is None:
+    # since there's no bias Tensor to copy: we don't get a device/dtype transfer for free, so must do so explicitly
+    conv.bias.data = conv.bias.data.to(device=conv.weight.data.device, dtype=conv.weight.data.dtype)
+  else:
+    conv.bias.data = linear.bias.data
+
+
+def to_amha(ca: CrossAttention) -> AMHADelegator:
+  bias = ca.to_k.bias is not None
+  assert bias == False
+  mha = AMHADelegator(
+    query_dim=ca.to_q.in_features,
+    cross_attention_dim=ca.to_k.in_features,
+    heads=ca.heads,
+    dim_head=ca.to_q.out_features//ca.heads,
+    dropout=ca.to_out[1].p,
+    bias=bias,
+  )
+  initialize_from_linear(mha.q_proj, ca.to_q)
+  initialize_from_linear(mha.k_proj, ca.to_k)
+  initialize_from_linear(mha.v_proj, ca.to_v)
+  initialize_from_linear(mha.out_proj, ca.to_out[0])
+  return mha
+
 def replace_cross_attention(module: nn.Module) -> None:
   for name, m in module.named_children():
     if isinstance(m, CrossAttention):
-      mha: MultiheadAttention = to_mha(m)
-      setattr(module, name, mha)
+      # is self-attention?
+      if m.to_q.in_features == m.to_k.in_features:
+        # mha: MultiheadAttention = to_mha(m)
+        mha: AMHADelegator = to_amha(m)
+        setattr(module, name, mha)
 
 unet.apply(replace_cross_attention)
 
