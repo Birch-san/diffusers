@@ -193,7 +193,7 @@ def replace_cross_attention(module: nn.Module) -> None:
         mha: AMHADelegator = to_amha(m)
         setattr(module, name, mha)
 
-unet.apply(replace_cross_attention)
+# unet.apply(replace_cross_attention)
 
 @no_grad()
 def latents_to_pils(latents: Tensor) -> List[Image.Image]:
@@ -222,7 +222,9 @@ seed=2178792735
 generator = Generator(device='cpu').manual_seed(seed)
 
 # prompt = "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave"
-prompt = 'aqua (konosuba), carnelian, general content, one girl, looking at viewer, blue hair, bangs, medium breasts, frills, blue skirt, blue shirt, detached sleeves, long hair, blue eyes, green ribbon, sleeveless shirt, gem, thighhighs under boots, watercolor (medium), traditional media'
+# prompt = 'aqua (konosuba), carnelian, general content, one girl, looking at viewer, blue hair, bangs, medium breasts, frills, blue skirt, blue shirt, detached sleeves, long hair, blue eyes, green ribbon, sleeveless shirt, gem, thighhighs under boots, watercolor (medium), traditional media'
+prompt = 'artoria pendragon (fate), carnelian, 1girl, general content, upper body, white shirt, blonde hair, looking at viewer, medium breasts, hair between eyes, floating hair, green eyes, blue ribbon, long sleeves, light smile, hair ribbon, watercolor (medium), traditional media'
+# prompt = 'willy wonka'
 prompts = ['', prompt]
 
 batch_size = 1
@@ -241,19 +243,23 @@ with no_grad():
   unet_k_wrapped = DiffusersSDDenoiser(pipe.unet, alphas_cumprod)
   denoiser = CFGDenoiser(unet_k_wrapped)
 
-  sigma_max=unet_k_wrapped.sigma_max
-  sigma_min=unet_k_wrapped.sigma_min
+  # sigma_max=unet_k_wrapped.sigma_max
+  # sigma_min=unet_k_wrapped.sigma_min
+  sigma_max=torch.tensor(7.0796, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
+  sigma_min=torch.tensor(0.0936, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
   sigmas: Tensor = get_sigmas_karras(
-    n=15,
+    n=5,
     sigma_max=sigma_max,
     sigma_min=sigma_min,
-    rho=7.,
+    # rho=7.,
+    rho=9.,
     device=device,
   ).to(unet.dtype)
   extra_args = {
     'cond': c,
     'uncond': uc,
     'cond_scale': 7.5,
+    # 'cond_scale': 1.5,
   }
   tic = time.perf_counter()
 
@@ -266,14 +272,14 @@ with no_grad():
     seed=seed,
   )
   # latents: Tensor = sample_heun(
-  # latents: Tensor = sample_dpmpp_2m(
-  latents: Tensor = sample_dpmpp_2s_ancestral(
+  latents: Tensor = sample_dpmpp_2m(
+  # latents: Tensor = sample_dpmpp_2s_ancestral(
     denoiser,
     latents * sigmas[0],
     sigmas,
     extra_args=extra_args,
     # callback=log_intermediate,
-    noise_sampler=noise_sampler,
+    # noise_sampler=noise_sampler,
   )
   # latents: Tensor = sample_dpm_adaptive(
   #   denoiser,
