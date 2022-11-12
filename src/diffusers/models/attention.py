@@ -584,6 +584,51 @@ class CrossAttention(nn.Module):
         return hidden_states
 
 
+class MultiheadAttention(nn.MultiheadAttention):
+    def __init__(
+        self,
+        query_dim: int,
+        cross_attention_dim: Optional[int] = None,
+        heads: int = 8,
+        dim_head: int = 64,
+        dropout: float = 0.0,
+        bias=False,
+    ):
+        inner_dim = dim_head * heads
+        cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
+        super().__init__(
+            embed_dim=inner_dim,
+            num_heads=heads,
+            dropout=dropout,
+            bias=bias,
+            batch_first=True,
+            # kdim=cross_attention_dim,
+            # vdim=cross_attention_dim,
+        )
+
+    def forward(self, x):
+        out, _ = super().forward(
+            query=x,
+            key=x,
+            value=x,
+            need_weights=False,
+        )
+        return out
+
+def to_mha(ca: CrossAttention) -> MultiheadAttention:
+    mha = MultiheadAttention(
+        query_dim=ca.to_q.in_features,
+        cross_attention_dim=ca.to_k.in_features,
+        heads=ca.heads,
+        dim_head=ca.to_q.out_features//ca.heads,
+        dropout=ca.to_out[1].p,
+        bias=ca.to_k.bias is not None,
+    )
+    mha.get_parameter('in_proj_weight').data = torch.cat([ca.to_q.weight, ca.to_k.weight, ca.to_v.weight])
+    mha.out_proj.weight = ca.to_out[0].weight
+    mha.out_proj.bias = ca.to_out[0].bias
+    return mha
+
 class FeedForward(nn.Module):
     r"""
     A feed-forward layer.
