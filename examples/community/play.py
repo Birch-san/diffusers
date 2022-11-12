@@ -18,9 +18,10 @@ sampling.default_noise_sampler = lambda x: (
 import torch
 from torch import Generator, Tensor, randn, linspace, cumprod, no_grad, nn
 from apple.multihead_attention import MultiHeadAttention
+from apple.layer_norm import LayerNormANE
 from diffusers.pipelines import StableDiffusionPipeline
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
-from diffusers.models.attention import CrossAttention, MultiheadAttention, to_mha
+from diffusers.models.attention import BasicTransformerBlock, CrossAttention, MultiheadAttention, to_mha
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
 from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler, sample_dpm_adaptive, sample_dpmpp_2m
@@ -141,14 +142,16 @@ class AMHADelegator(MultiHeadAttention):
   
   def forward(self, hidden_states: Tensor, context: Optional[Tensor]=None) -> Tensor:
     # TODO: we're probably undoing a permute from upstream, so just eliminate that
-    hidden_states = hidden_states.permute(0,2,1).unsqueeze(2)
-    context = context.permute(0,2,1).unsqueeze(2) if context is not None else hidden_states
+    # hidden_states = hidden_states.permute(0,2,1).unsqueeze(2)
+    context = context.transpose(2,1).unsqueeze(2) if context is not None else hidden_states
+    # hidden_states = hidden_states.unsqueeze(2)
+    # context = context.unsqueeze(2) if context is not None else hidden_states
     out, _ = super().forward(
       q=hidden_states,
       k=context,
       v=context,
     )
-    out = out.squeeze(2).permute(0,2,1)
+    out = out.squeeze(2).transpose(2,1)
     return out
 
 def linear_to_conv2d(state: Tensor) -> Tensor:
@@ -166,7 +169,8 @@ def initialize_from_linear(conv: nn.Conv2d, linear: nn.Linear) -> None:
   conv.weight.data = linear_to_conv2d(linear.weight.data)
   if linear.bias is None:
     # since there's no bias Tensor to copy: we don't get a device/dtype transfer for free, so must do so explicitly
-    conv.bias.data = conv.bias.data.to(device=conv.weight.data.device, dtype=conv.weight.data.dtype)
+    # conv.bias.data = conv.bias.data.to(device=conv.weight.data.device, dtype=conv.weight.data.dtype)
+    conv.bias.data = torch.zeros(linear.out_features, device=conv.weight.data.device, dtype=conv.weight.data.dtype)
   else:
     conv.bias.data = linear.bias.data
 
@@ -188,6 +192,13 @@ def to_amha(ca: CrossAttention) -> AMHADelegator:
   initialize_from_linear(mha.out_proj, ca.to_out[0])
   return mha
 
+def to_aln(ln: nn.LayerNorm) -> LayerNormANE:
+  dim, = ln.normalized_shape
+  aln = LayerNormANE(dim)
+  aln.weight.data = ln.weight.data
+  aln.bias.data = ln.bias.data / ln.weight.data
+  return aln
+
 def replace_cross_attention(module: nn.Module) -> None:
   for name, m in module.named_children():
     if isinstance(m, CrossAttention):
@@ -196,8 +207,11 @@ def replace_cross_attention(module: nn.Module) -> None:
         # mha: MultiheadAttention = to_mha(m)
         mha: AMHADelegator = to_amha(m)
         setattr(module, name, mha)
+    elif isinstance(m, BasicTransformerBlock):
+      aln: LayerNormANE = to_aln(m.norm1)
+      setattr(m, 'norm1', aln)
 
-# unet.apply(replace_cross_attention)
+unet.apply(replace_cross_attention)
 
 @no_grad()
 def latents_to_pils(latents: Tensor) -> List[Image.Image]:
