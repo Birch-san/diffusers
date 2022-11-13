@@ -30,6 +30,11 @@ from typing import TypeAlias, Union, List, Optional, Callable, TypedDict
 from PIL import Image
 import time
 
+import coremltools as ct
+from pathlib import Path
+import torch as th
+from coremltools.models import MLModel
+
 class KSamplerCallbackPayload(TypedDict):
   x: Tensor
   i: int
@@ -82,17 +87,17 @@ class CFGDenoiser():
   ) -> Tensor:
     if uncond is None or cond_scale == 1.0:
       return self.denoiser(input=x, sigma=sigma, encoder_hidden_states=cond)
-    # cond_in = torch.cat([uncond, cond])
-    # del uncond, cond
-    # x_in = x.expand(cond_in.size(dim=0), -1, -1, -1)
-    # del x
-    # uncond, cond = self.denoiser(input=x_in, sigma=sigma, encoder_hidden_states=cond_in).chunk(cond_in.size(dim=0))
-    # del x_in, cond_in
-    # return uncond + (cond - uncond) * cond_scale
-    # I don't currently have batching working with ANE, but this gets around it
-    uncond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=uncond)
-    cond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=cond)
+    cond_in = torch.cat([uncond, cond])
+    del uncond, cond
+    x_in = x.expand(cond_in.size(dim=0), -1, -1, -1)
+    del x
+    uncond, cond = self.denoiser(input=x_in, sigma=sigma, encoder_hidden_states=cond_in).chunk(cond_in.size(dim=0))
+    del x_in, cond_in
     return uncond + (cond - uncond) * cond_scale
+    # I don't currently have batching working with ANE, but this gets around it
+    # uncond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=uncond)
+    # cond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=cond)
+    # return uncond + (cond - uncond) * cond_scale
 
 pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
   # "/Users/birch/git/stable-diffusion-v1-4",
@@ -103,7 +108,8 @@ pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
   safety_checker=None,
 )
 
-device = torch.device('mps')
+# device = torch.device('mps')
+device = torch.device('cpu')
 pipe = pipe.to(device)
 
 text_encoder: CLIPTextModel = pipe.text_encoder
@@ -213,6 +219,57 @@ def replace_cross_attention(module: nn.Module) -> None:
 
 unet.apply(replace_cross_attention)
 
+class Undictifier(th.nn.Module):
+  def __init__(self, m):
+    super().__init__()
+    self.m = m
+  def forward(self, *args, **kwargs): 
+    return self.m(*args, **kwargs)["sample"]
+
+def convert_unet(f, out_name):
+  from coremltools.converters.mil import Builder as mb
+  from coremltools.converters.mil.frontend.torch.torch_op_registry import register_torch_op, _TORCH_OPS_REGISTRY
+  import coremltools.converters.mil.frontend.torch.ops as cml_ops
+  orig_baddbmm = th.baddbmm
+  def fake_baddbmm(_: Tensor, batch1: Tensor, batch2: Tensor, beta: float, alpha: float):
+    return th.bmm(batch1, batch2) * alpha
+  th.baddbmm = fake_baddbmm
+  if "broadcast_to" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["broadcast_to"]
+  @register_torch_op
+  def broadcast_to(context, node): return cml_ops.expand(context, node)
+  if "gelu" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["gelu"]
+  @register_torch_op
+  def gelu(context, node): context.add(mb.gelu(x=context[node.inputs[0]], name=node.name))
+  print("tracing")
+  f_trace = th.jit.trace(Undictifier(f), (th.zeros(2, 4, 64, 64), th.zeros(1), th.zeros(2, 77, 768)), strict=False, check_trace=False)
+  print("converting")
+  f_coreml_fp16 = ct.convert(f_trace, 
+              inputs=[ct.TensorType(shape=(2, 4, 64, 64)), ct.TensorType(shape=(1,)), ct.TensorType(shape=(2, 77, 768))],
+              convert_to="mlprogram",  compute_precision=ct.precision.FLOAT16, skip_model_load=True)
+  f_coreml_fp16.save(f"{out_name}")
+  th.baddbmm = orig_baddbmm
+
+class UNetWrapper:
+  def __init__(self, f, out_name="unet.mlpackage"):
+    self.in_channels = f.in_channels
+    self.dtype = f.dtype
+    if not Path(out_name).exists():
+      print("generating coreml model"); convert_unet(f, out_name); print("saved")
+    # not only does ANE take forever to load because it recompiles each time - it then doesn't work!
+    # and NSLocalizedDescription = "Error computing NN outputs."; is not helpful... GPU it is
+    print("loading saved coreml model");
+    # f_coreml_fp16 = MLModel(out_name, compute_units=ct.ComputeUnit.CPU_AND_GPU); print("loaded")
+    f_coreml_fp16 = MLModel(out_name, compute_units=ct.ComputeUnit.ALL); print("loaded")
+    self.f = f_coreml_fp16
+
+  def __call__(self, sample, timestep, encoder_hidden_states):
+    # "timestep": timestep.int().item()
+    args = {"sample": sample.numpy(), "timestep": timestep.int().numpy(), "input_31": encoder_hidden_states.numpy()}
+    for v in self.f.predict(args).values():
+      return UNet2DConditionOutput(sample=th.tensor(v, dtype=self.dtype))
+
+unet = UNetWrapper(unet)
+
 @no_grad()
 def latents_to_pils(latents: Tensor) -> List[Image.Image]:
   latents = 1 / 0.18215 * latents
@@ -249,7 +306,7 @@ batch_size = 1
 num_images_per_prompt = 1
 width = 512
 height = 512
-latents_shape = (batch_size * num_images_per_prompt, pipe.unet.in_channels, height // 8, width // 8)
+latents_shape = (batch_size * num_images_per_prompt, unet.in_channels, height // 8, width // 8)
 with no_grad():
   tokens = pipe.tokenizer(prompts, padding="max_length", max_length=tokenizer.model_max_length, return_tensors="pt")
   text_input_ids: Tensor = tokens.input_ids
@@ -258,7 +315,7 @@ with no_grad():
   latents = randn(latents_shape, generator=generator, device='cpu', dtype=unet.dtype).to(device)
 
   alphas_cumprod: Tensor = get_alphas_cumprod(get_alphas(get_betas(device=device))).to(dtype=unet.dtype)
-  unet_k_wrapped = DiffusersSDDenoiser(pipe.unet, alphas_cumprod)
+  unet_k_wrapped = DiffusersSDDenoiser(unet, alphas_cumprod)
   denoiser = CFGDenoiser(unet_k_wrapped)
 
   # sigma_max=unet_k_wrapped.sigma_max

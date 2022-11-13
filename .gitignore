@@ -168,3 +168,4 @@ tags
 /out*/
 /intermediates/
 /src/k-diffusion
+*.mlpackage/
