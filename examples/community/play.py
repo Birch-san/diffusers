@@ -225,23 +225,23 @@ else:
     torch_dtype=torch.float16
   device = torch.device('mps')
 
+coreml_modules = ['unet'] if loading_coreml_model else []
+omit_modules = ['safety_checker', *coreml_modules]
+
 pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
   # "/Users/birch/git/stable-diffusion-v1-4",
   'hakurei/waifu-diffusion',
   # 'runwayml/stable-diffusion-v1-5',
   revision=revision,
   torch_dtype=torch_dtype,
-  safety_checker=None,
+  **{ key: None for key in omit_modules }
 )
 
 pipe = pipe.to(device)
 
 text_encoder: CLIPTextModel = pipe.text_encoder
 tokenizer: PreTrainedTokenizer = pipe.tokenizer
-if loading_coreml_model:
-  # TODO: find/make a way to not load it in the first place
-  del pipe.unet
-else:
+if not loading_coreml_model:
   unet: UNet2DConditionModel = pipe.unet
   unet.eval()
   sampler = Sampler(unet)
