@@ -35,12 +35,14 @@ from pathlib import Path
 import torch as th
 from coremltools.models import MLModel
 
-# 128x128 images, 5 DPMSolver++ steps, limited sigma schedule
-prototyping = False
-cfg_enabled = False
+# 5 DPMSolver++ steps, limited sigma schedule
+prototyping = True
+# 128x128 images, for even more extreme prototyping
+smol = prototyping and False
+cfg_enabled = True
 benchmarking = not prototyping and False
 coreml_sampler = True
-saving_coreml_model = True
+saving_coreml_model = False
 # we shouldn't attempt to load CoreML model during the same run as when saving it, because sampling+VAE+encoder will be on-CPU and wrong dtype
 loading_coreml_model = not saving_coreml_model and False
 loading_coreml_ane = loading_coreml_model and False
@@ -51,6 +53,8 @@ replacing_self_attention = using_ane_self_attention or using_torch_self_attentio
 # on MPS, batching encounters correctness issues when using ANE-optimized self-attention
 # on CoreML, batching encounters "Error computing NN outputs" issues when **not** using ANE-optimized self-attention
 one_at_a_time = using_ane_self_attention != loading_coreml_model
+# we save CoreML models in half-precision since that's all ANE supports
+half = not loading_coreml_model and not saving_coreml_model and False
 
 class KSamplerCallbackPayload(TypedDict):
   x: Tensor
@@ -216,8 +220,9 @@ if saving_coreml_model:
   device = torch.device('cpu')
   # could fp16 model revision make it trace any faster? probably not
 else:
-  revision='fp16'
-  torch_dtype=torch.float16
+  if half:
+    revision='fp16'
+    torch_dtype=torch.float16
   device = torch.device('mps')
 
 pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
@@ -476,12 +481,9 @@ if saving_coreml_model:
   # we refrain from loading the model and continuing, because our Unet, etc are on CPU/float32
   sys.exit()
 
-
-
 class UNetWrapper:
   ml_model: MLModel
   def __init__(self, ml_model: MLModel):
-    self.dtype = dtype
     self.ml_model = ml_model
     self.device = device
 
@@ -505,7 +507,7 @@ class UNetWrapper:
       return UNet2DConditionOutput(sample=sample)
 
 class SamplerWrapper:
-  ml_model: ml_model
+  ml_model: MLModel
   def __init__(self, ml_model: MLModel):
     self.ml_model = ml_model
 
@@ -569,9 +571,9 @@ os.makedirs(sample_path, exist_ok=True)
 
 # prompt = "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave"
 # prompt = 'aqua (konosuba), carnelian, general content, one girl, looking at viewer, blue hair, bangs, medium breasts, frills, blue skirt, blue shirt, detached sleeves, long hair, blue eyes, green ribbon, sleeveless shirt, gem, thighhighs under boots, watercolor (medium), traditional media'
-# prompt = 'artoria pendragon (fate), carnelian, 1girl, general content, upper body, white shirt, blonde hair, looking at viewer, medium breasts, hair between eyes, floating hair, green eyes, blue ribbon, long sleeves, light smile, hair ribbon, watercolor (medium), traditional media'
+prompt = 'artoria pendragon (fate), carnelian, 1girl, general content, upper body, white shirt, blonde hair, looking at viewer, medium breasts, hair between eyes, floating hair, green eyes, blue ribbon, long sleeves, light smile, hair ribbon, watercolor (medium), traditional media'
 # prompt = 'rem (re:zero), carnelian, 1girl, upper body, blue hair, looking at viewer, medium breasts, hair between eyes, floating hair, blue eyes, blue hair, short hair, roswaal mansion maid uniform, detached sleeves, detached collar, ribbon trim, maid headdress, x hair ornament, sunset, marker (medium)'
-prompt = 'matou sakura, carnelian, 1girl, purple hair, looking at viewer, medium breasts, hair between eyes, floating hair, purple eyes, long hair, long sleeves, collared shirt, brown vest, black skirt, white sleeves, school uniform, red ribbon, wide hips, lying, marker (medium)'
+# prompt = 'matou sakura, carnelian, 1girl, purple hair, looking at viewer, medium breasts, hair between eyes, floating hair, purple eyes, long hair, long sleeves, collared shirt, brown vest, black skirt, white sleeves, school uniform, red ribbon, wide hips, lying, marker (medium)'
 # prompt = 'willy wonka'
 unprompts = [''] if cfg_enabled else []
 prompts = [*unprompts, prompt]
@@ -579,7 +581,7 @@ prompts = [*unprompts, prompt]
 n_iter = 20 if benchmarking else 1
 batch_size = 1
 num_images_per_prompt = 1
-width = 128 if prototyping else 512
+width = 128 if smol else 512
 height = width
 latent_channels = 4 # could use unet.in_channels, but we won't have that if loading a CoreML Unet
 latents_shape = (batch_size * num_images_per_prompt, latent_channels, height // 8, width // 8)
