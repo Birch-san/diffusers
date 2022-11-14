@@ -26,7 +26,7 @@ from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
 from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler, sample_dpm_adaptive, sample_dpmpp_2m
 from transformers import CLIPTextModel, PreTrainedTokenizer
-from typing import TypeAlias, Union, List, Optional, Callable, TypedDict
+from typing import Tuple, TypeAlias, Union, List, Optional, Callable, TypedDict
 from PIL import Image
 import time
 
@@ -397,6 +397,13 @@ def convert_unet(pt_model: UNet2DConditionModel, out_name: str) -> None:
     )
 
   print("converting")
+  # https://github.com/apple/coremltools/blob/870213ba6545369335ac72e61127c8d20ea745e5/coremltools/converters/mil/mil/ops/defs/iOS15/elementwise_unary.py
+  # /Users/birch/anaconda3/envs/diffnightly/lib/python3.10/site-packages/coremltools/converters/mil/mil/ops/defs/iOS15/elementwise_unary.py
+  # ERROR: 'float' object has no attribute 'astype'
+  # changed:
+  # + if isinstance(input_var.val, float):
+  # +   return type_map[dtype_val](input_var.val)
+  #   if not types.is_tensor(input_var.sym_type):
   cm_model = ct.convert(
     trace, 
     inputs=[
@@ -425,6 +432,24 @@ def convert_sampler(pt_model: Sampler, out_name: str) -> None:
     return torch.bmm(batch1, batch2) * alpha
   torch.baddbmm = fake_baddbmm
 
+  orig_new_ones = torch.Tensor.new_ones
+  def fake_new_ones(self: Tensor, shape: Tuple[int, ...], *args, **kwargs):
+    return torch.full(shape, 1)#, dtype=self.dtype, device=self.device)
+  torch.Tensor.new_ones = fake_new_ones
+
+  orig_expm1 = torch.Tensor.expm1
+  def fake_expm1(self: Tensor, *args, **kwargs):
+    return self.exp() - 1
+  torch.Tensor.expm1 = fake_expm1
+
+  orig_argmin = torch.Tensor.argmin
+  def fake_argmin(self: Tensor, dim: Optional[int]=None, keepdim=False, *args, **kwargs):
+    assert dim == 0
+    assert keepdim == False
+    _, indices = self.min(0)
+    return indices
+  torch.Tensor.argmin = fake_argmin
+
   if "broadcast_to" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["broadcast_to"]
   @register_torch_op
   def broadcast_to(context, node): return cml_ops.expand(context, node)
@@ -439,12 +464,12 @@ def convert_sampler(pt_model: Sampler, out_name: str) -> None:
   cond_scale_shape = (1,)
   with no_grad(): # not sure whether no_grad is necessary but can't hurt
     trace = torch.jit.trace(
-      Undictifier(pt_model),
+      pt_model,
       (
         torch.zeros(*latents_shape),
         torch.zeros(*embedding_shape),
         torch.zeros(*embedding_shape),
-        torch.zeros(*cond_scale_shape),
+        torch.full(cond_scale_shape, 1.),
       ),
       strict=False,
       check_trace=False
@@ -469,6 +494,9 @@ def convert_sampler(pt_model: Sampler, out_name: str) -> None:
   print(f"saved")
 
   torch.baddbmm = orig_baddbmm
+  torch.Tensor.new_ones = orig_new_ones
+  torch.Tensor.argmin = orig_argmin
+  torch.Tensor.expm1 = orig_expm1
 
 mlp_name='sampler.mlpackage' if coreml_sampler else 'unet.mlpackage'
 if saving_coreml_model:
