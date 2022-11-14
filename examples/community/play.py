@@ -60,13 +60,47 @@ def get_alphas(betas: Tensor) -> Tensor:
 def get_alphas_cumprod(alphas: Tensor) -> Tensor:
   return cumprod(alphas, dim=0)
 
+# 128x128 images, 5 DPMSolver++ steps, limited sigma schedule
+prototyping = False
+cfg_enabled = False
+benchmarking = not prototyping and False
+saving_coreml_model = True
+# we shouldn't attempt to load CoreML model during the same run as when saving it, because sampling+VAE+encoder will be on-CPU and wrong dtype
+loading_coreml_model = not saving_coreml_model and False
+loading_coreml_ane = loading_coreml_model and False
+using_ane_self_attention = False
+using_torch_self_attention = False
+replacing_self_attention = using_ane_self_attention or using_torch_self_attention
+# workaround for two bad combinations
+# on MPS, batching encounters correctness issues when using ANE-optimized self-attention
+# on CoreML, batching encounters "Error computing NN outputs" issues when **not** using ANE-optimized self-attention
+one_at_a_time = using_ane_self_attention != loading_coreml_model
+
 class DiffusersSDDenoiser(DiscreteEpsDDPMDenoiser):
   inner_model: UNet2DConditionModel
   def __init__(self, unet: UNet2DConditionModel, alphas_cumprod: Tensor):
     super().__init__(unet, alphas_cumprod, quantize=True)
 
-  def get_eps(self, *args, **kwargs) -> Tensor:
-    out: UNet2DConditionOutput = self.inner_model(*args, **kwargs)
+  def get_eps(
+    self,
+    sample: torch.FloatTensor,
+    timestep: Union[torch.Tensor, float, int],
+    encoder_hidden_states: torch.Tensor,
+    return_dict: bool = True,
+    ) -> Tensor:
+    if isinstance(self.inner_model, UNetWrapper):
+      orig_dtype, orig_device = sample.dtype, sample.device
+      sample = sample.to(dtype=torch.float16, device='cpu')
+      timestep = timestep.cpu()
+      encoder_hidden_states = encoder_hidden_states.to(dtype=torch.float16, device='cpu')
+    out: UNet2DConditionOutput = self.inner_model(
+      sample,
+      timestep,
+      encoder_hidden_states=encoder_hidden_states,
+      return_dict=return_dict,
+    )
+    if isinstance(self.inner_model, UNetWrapper):
+      out.sample = out.sample.to(dtype=orig_dtype, device=orig_device)
     return out.sample
 
   def sigma_to_t(self, sigma: Tensor, quantize=None) -> Tensor:
@@ -87,6 +121,11 @@ class CFGDenoiser():
   ) -> Tensor:
     if uncond is None or cond_scale == 1.0:
       return self.denoiser(input=x, sigma=sigma, encoder_hidden_states=cond)
+    if one_at_a_time:
+      # if batching doesn't work: don't batch
+      uncond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=uncond)
+      cond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=cond)
+      return uncond + (cond - uncond) * cond_scale
     cond_in = torch.cat([uncond, cond])
     del uncond, cond
     x_in = x.expand(cond_in.size(dim=0), -1, -1, -1)
@@ -94,27 +133,35 @@ class CFGDenoiser():
     uncond, cond = self.denoiser(input=x_in, sigma=sigma, encoder_hidden_states=cond_in).chunk(cond_in.size(dim=0))
     del x_in, cond_in
     return uncond + (cond - uncond) * cond_scale
-    # I don't currently have batching working with ANE, but this gets around it
-    # uncond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=uncond)
-    # cond = self.denoiser(input=x, sigma=sigma, encoder_hidden_states=cond)
-    # return uncond + (cond - uncond) * cond_scale
+
+revision=None
+torch_dtype=None
+if saving_coreml_model:
+  # gotta trace model on-CPU, and only float32 is supported
+  device = torch.device('cpu')
+  # could fp16 model revision make it trace any faster? probably not
+else:
+  revision='fp16'
+  torch_dtype=torch.float16
+  device = torch.device('mps')
 
 pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
   # "/Users/birch/git/stable-diffusion-v1-4",
   'hakurei/waifu-diffusion',
   # 'runwayml/stable-diffusion-v1-5',
-  # revision='fp16',
-  # torch_dtype=torch.float16,
+  revision=revision,
+  torch_dtype=torch_dtype,
   safety_checker=None,
 )
 
-# device = torch.device('mps')
-device = torch.device('cpu')
 pipe = pipe.to(device)
 
 text_encoder: CLIPTextModel = pipe.text_encoder
 tokenizer: PreTrainedTokenizer = pipe.tokenizer
-unet: UNet2DConditionModel = pipe.unet
+if loading_coreml_model:
+  del pipe.unet
+else:
+  unet: UNet2DConditionModel = pipe.unet
 vae: AutoencoderKL = pipe.vae
 
 class AMHADelegator(MultiHeadAttention):
@@ -205,70 +252,129 @@ def to_aln(ln: nn.LayerNorm) -> LayerNormANE:
   aln.bias.data = ln.bias.data / ln.weight.data
   return aln
 
-def replace_cross_attention(module: nn.Module) -> None:
+def replace_attention(module: nn.Module) -> None:
+  assert using_torch_self_attention or using_ane_self_attention
   for name, m in module.named_children():
     if isinstance(m, CrossAttention):
       # is self-attention?
       if m.to_q.in_features == m.to_k.in_features:
-        # mha: MultiheadAttention = to_mha(m)
-        mha: AMHADelegator = to_amha(m)
+        if using_torch_self_attention:
+          mha: MultiheadAttention = to_mha(m)
+        elif using_ane_self_attention:
+          mha: AMHADelegator = to_amha(m)
         setattr(module, name, mha)
-    elif isinstance(m, BasicTransformerBlock):
+    elif using_ane_self_attention and isinstance(m, BasicTransformerBlock):
       aln: LayerNormANE = to_aln(m.norm1)
       setattr(m, 'norm1', aln)
 
-unet.apply(replace_cross_attention)
+if replacing_self_attention and not loading_coreml_model:
+  unet.apply(replace_attention)
 
-class Undictifier(th.nn.Module):
-  def __init__(self, m):
+class Undictifier(nn.Module):
+  model: nn.Module
+  def __init__(self, model: nn.Module):
     super().__init__()
-    self.m = m
+    self.model = model
   def forward(self, *args, **kwargs): 
-    return self.m(*args, **kwargs)["sample"]
+    return self.model(*args, **kwargs)["sample"]
 
-def convert_unet(f, out_name):
+def convert_unet(pt_model: UNet2DConditionModel, out_name: str) -> None:
   from coremltools.converters.mil import Builder as mb
   from coremltools.converters.mil.frontend.torch.torch_op_registry import register_torch_op, _TORCH_OPS_REGISTRY
   import coremltools.converters.mil.frontend.torch.ops as cml_ops
-  orig_baddbmm = th.baddbmm
+
+  orig_baddbmm = torch.baddbmm
   def fake_baddbmm(_: Tensor, batch1: Tensor, batch2: Tensor, beta: float, alpha: float):
-    return th.bmm(batch1, batch2) * alpha
-  th.baddbmm = fake_baddbmm
+    return torch.bmm(batch1, batch2) * alpha
+  torch.baddbmm = fake_baddbmm
+
   if "broadcast_to" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["broadcast_to"]
   @register_torch_op
   def broadcast_to(context, node): return cml_ops.expand(context, node)
+
   if "gelu" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["gelu"]
   @register_torch_op
   def gelu(context, node): context.add(mb.gelu(x=context[node.inputs[0]], name=node.name))
+
   print("tracing")
-  f_trace = th.jit.trace(Undictifier(f), (th.zeros(2, 4, 64, 64), th.zeros(1), th.zeros(2, 77, 768)), strict=False, check_trace=False)
+  b = 1 if one_at_a_time or not cfg_enabled else 2
+  latents_shape = (b, 4, 64, 64)
+  timestep_shape = (1,)
+  embeddings_shape = (b, 77, 768)
+  trace = torch.jit.trace(
+    Undictifier(pt_model),
+    (
+      torch.zeros(*latents_shape),
+      torch.zeros(*timestep_shape),
+      torch.zeros(*embeddings_shape)
+    ),
+    strict=False,
+    check_trace=False
+  )
+
   print("converting")
-  f_coreml_fp16 = ct.convert(f_trace, 
-              inputs=[ct.TensorType(shape=(2, 4, 64, 64)), ct.TensorType(shape=(1,)), ct.TensorType(shape=(2, 77, 768))],
-              convert_to="mlprogram",  compute_precision=ct.precision.FLOAT16, skip_model_load=True)
-  f_coreml_fp16.save(f"{out_name}")
-  th.baddbmm = orig_baddbmm
+  cm_model = ct.convert(
+    trace, 
+    inputs=[
+      ct.TensorType(
+        shape=latents_shape
+      ),
+      ct.TensorType(shape=timestep_shape),
+      ct.TensorType(shape=embeddings_shape)
+    ],
+    convert_to="mlprogram",
+    compute_precision=ct.precision.FLOAT16,
+    skip_model_load=True
+  )
+
+  print(f"saving to '{out_name}'")
+  cm_model.save(f"{out_name}")
+  print(f"saved")
+
+  torch.baddbmm = orig_baddbmm
+
+mlp_name='unet.mlpackage'
+if saving_coreml_model:
+  if Path(mlp_name).exists():
+    print(f"CoreML model '{mlp_name}' already exists")
+  else:
+    print("generating CoreML model")
+    convert_unet(unet, mlp_name)
+    print(f"saved CoreML model '{mlp_name}'")
+  # we refrain from loading the model and continuing, because our Unet, etc are on CPU/float32
+  sys.exit()
 
 class UNetWrapper:
-  def __init__(self, f, out_name="unet.mlpackage"):
-    self.in_channels = f.in_channels
-    self.dtype = f.dtype
-    if not Path(out_name).exists():
-      print("generating coreml model"); convert_unet(f, out_name); print("saved")
-    # not only does ANE take forever to load because it recompiles each time - it then doesn't work!
-    # and NSLocalizedDescription = "Error computing NN outputs."; is not helpful... GPU it is
-    print("loading saved coreml model");
-    # f_coreml_fp16 = MLModel(out_name, compute_units=ct.ComputeUnit.CPU_AND_GPU); print("loaded")
-    f_coreml_fp16 = MLModel(out_name, compute_units=ct.ComputeUnit.ALL); print("loaded")
-    self.f = f_coreml_fp16
+  ml_model: MLModel
+  dtype: torch.dtype
+  def __init__(self, ml_model: MLModel, dtype: torch.dtype):
+    self.dtype = dtype
+    self.ml_model = ml_model
 
-  def __call__(self, sample, timestep, encoder_hidden_states):
-    # "timestep": timestep.int().item()
-    args = {"sample": sample.numpy(), "timestep": timestep.int().numpy(), "input_31": encoder_hidden_states.numpy()}
-    for v in self.f.predict(args).values():
-      return UNet2DConditionOutput(sample=th.tensor(v, dtype=self.dtype))
+  def __call__(
+    self, 
+    sample: torch.FloatTensor,
+    timestep: Union[torch.Tensor, float, int],
+    encoder_hidden_states: torch.Tensor,
+    return_dict: bool = True,
+  ) -> UNet2DConditionOutput:
+    args = {
+      "sample": sample.numpy(),
+      "timestep": timestep.int().numpy(),
+      "input_35": encoder_hidden_states.numpy(),
+    }
+    prediction = self.ml_model.predict(args)
+    for v in prediction.values():
+      sample=torch.tensor(v, dtype=self.dtype)
+      return UNet2DConditionOutput(sample=sample)
 
-unet = UNetWrapper(unet)
+if loading_coreml_model:
+  compute_units=ct.ComputeUnit.ALL if loading_coreml_ane else ct.ComputeUnit.CPU_AND_GPU
+  print(f"loading CoreML model '{mlp_name}'")
+  assert Path(mlp_name).exists()
+  f_coreml_fp16 = MLModel(mlp_name, compute_units=compute_units, dtype=torch.float16)
+  print("loaded")
+  unet = UNetWrapper(unet)
 
 @no_grad()
 def latents_to_pils(latents: Tensor) -> List[Image.Image]:
@@ -292,88 +398,100 @@ def log_intermediate(payload: KSamplerCallbackPayload) -> None:
   for img in sample_pils:
     img.save(os.path.join(intermediates_path, f"inter.{payload['i']}.png"))
 
-# seed=68673924
-seed=2178792735
-generator = Generator(device='cpu').manual_seed(seed)
+sample_path='out'
+os.makedirs(sample_path, exist_ok=True)    
 
 # prompt = "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave"
 # prompt = 'aqua (konosuba), carnelian, general content, one girl, looking at viewer, blue hair, bangs, medium breasts, frills, blue skirt, blue shirt, detached sleeves, long hair, blue eyes, green ribbon, sleeveless shirt, gem, thighhighs under boots, watercolor (medium), traditional media'
-prompt = 'artoria pendragon (fate), carnelian, 1girl, general content, upper body, white shirt, blonde hair, looking at viewer, medium breasts, hair between eyes, floating hair, green eyes, blue ribbon, long sleeves, light smile, hair ribbon, watercolor (medium), traditional media'
+# prompt = 'artoria pendragon (fate), carnelian, 1girl, general content, upper body, white shirt, blonde hair, looking at viewer, medium breasts, hair between eyes, floating hair, green eyes, blue ribbon, long sleeves, light smile, hair ribbon, watercolor (medium), traditional media'
+# prompt = 'rem (re:zero), carnelian, 1girl, upper body, blue hair, looking at viewer, medium breasts, hair between eyes, floating hair, blue eyes, blue hair, short hair, roswaal mansion maid uniform, detached sleeves, detached collar, ribbon trim, maid headdress, x hair ornament, sunset, marker (medium)'
+prompt = 'matou sakura, carnelian, 1girl, purple hair, looking at viewer, medium breasts, hair between eyes, floating hair, purple eyes, long hair, long sleeves, collared shirt, brown vest, black skirt, white sleeves, school uniform, red ribbon, wide hips, lying, marker (medium)'
 # prompt = 'willy wonka'
-prompts = ['', prompt]
+unprompts = [''] if cfg_enabled else []
+prompts = [*unprompts, prompt]
 
+n_iter = 20 if benchmarking else 1
 batch_size = 1
 num_images_per_prompt = 1
-width = 512
-height = 512
-latents_shape = (batch_size * num_images_per_prompt, unet.in_channels, height // 8, width // 8)
+width = 128 if prototyping else 512
+height = width
+latent_channels = 4 # could use unet.in_channels, but we won't have that if loading a CoreML Unet
+latents_shape = (batch_size * num_images_per_prompt, latent_channels, height // 8, width // 8)
 with no_grad():
   tokens = pipe.tokenizer(prompts, padding="max_length", max_length=tokenizer.model_max_length, return_tensors="pt")
   text_input_ids: Tensor = tokens.input_ids
   text_embeddings: Tensor = text_encoder(text_input_ids.to(device))[0]
   uc, c = text_embeddings.chunk(text_embeddings.size(0))
-  latents = randn(latents_shape, generator=generator, device='cpu', dtype=unet.dtype).to(device)
 
-  alphas_cumprod: Tensor = get_alphas_cumprod(get_alphas(get_betas(device=device))).to(dtype=unet.dtype)
-  unet_k_wrapped = DiffusersSDDenoiser(unet, alphas_cumprod)
-  denoiser = CFGDenoiser(unet_k_wrapped)
+  batch_tic = time.perf_counter()
+  for iter in range(n_iter):
+    # seed=68673924
+    seed=2178792735
+    generator = Generator(device='cpu').manual_seed(seed+iter)
+    latents = randn(latents_shape, generator=generator, device='cpu', dtype=unet.dtype).to(device)
 
-  # sigma_max=unet_k_wrapped.sigma_max
-  # sigma_min=unet_k_wrapped.sigma_min
-  sigma_max=torch.tensor(7.0796, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
-  sigma_min=torch.tensor(0.0936, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
-  sigmas: Tensor = get_sigmas_karras(
-    n=5,
-    sigma_max=sigma_max,
-    sigma_min=sigma_min,
-    # rho=7.,
-    rho=9.,
-    device=device,
-  ).to(unet.dtype)
-  extra_args = {
-    'cond': c,
-    'uncond': uc,
-    'cond_scale': 7.5,
-    # 'cond_scale': 1.5,
-  }
-  tic = time.perf_counter()
+    alphas_cumprod: Tensor = get_alphas_cumprod(get_alphas(get_betas(device=device))).to(dtype=unet.dtype)
+    unet_k_wrapped = DiffusersSDDenoiser(unet, alphas_cumprod)
+    denoiser = CFGDenoiser(unet_k_wrapped)
 
-  noise_sampler = BrownianTreeNoiseSampler(
-    latents,
-    sigma_min=sigma_min,
-    sigma_max=sigma_max,
-    # there's no requirement that the noise sampler's seed be coupled to the init noise seed;
-    # I'm just re-using it because it's a convenient arbitrary number
-    seed=seed,
-  )
-  # latents: Tensor = sample_heun(
-  latents: Tensor = sample_dpmpp_2m(
-  # latents: Tensor = sample_dpmpp_2s_ancestral(
-    denoiser,
-    latents * sigmas[0],
-    sigmas,
-    extra_args=extra_args,
-    # callback=log_intermediate,
-    # noise_sampler=noise_sampler,
-  )
-  # latents: Tensor = sample_dpm_adaptive(
-  #   denoiser,
-  #   latents * sigmas[0],
-  #   sigma_min=sigma_min,
-  #   sigma_max=sigma_max,
-  #   extra_args=extra_args,
-  #   # noise_sampler=noise_sampler,
-  #   rtol=.003125,
-  #   atol=.0004875,
-  # )
-  pil_images: List[Image.Image] = latents_to_pils(latents)
+    if prototyping:
+      steps=5
+      sigma_max=torch.tensor(7.0796, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
+      sigma_min=torch.tensor(0.0936, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
+      rho=9.
+    else:
+      steps=15
+      sigma_max=unet_k_wrapped.sigma_max
+      sigma_min=unet_k_wrapped.sigma_min
+      rho=7.
+    cond_scale = 7.5 if cfg_enabled else 1.
+    sigmas: Tensor = get_sigmas_karras(
+      n=steps,
+      sigma_max=sigma_max,
+      sigma_min=sigma_min,
+      rho=rho,
+      device=device,
+    ).to(unet.dtype)
+    extra_args = {
+      'cond': c,
+      'uncond': uc,
+      'cond_scale': cond_scale
+    }
+    tic = time.perf_counter()
 
-toc = time.perf_counter()
+    noise_sampler = BrownianTreeNoiseSampler(
+      latents,
+      sigma_min=sigma_min,
+      sigma_max=sigma_max,
+      # there's no requirement that the noise sampler's seed be coupled to the init noise seed;
+      # I'm just re-using it because it's a convenient arbitrary number
+      seed=seed,
+    )
+    # latents: Tensor = sample_heun(
+    latents: Tensor = sample_dpmpp_2m(
+    # latents: Tensor = sample_dpmpp_2s_ancestral(
+      denoiser,
+      latents * sigmas[0],
+      sigmas,
+      extra_args=extra_args,
+      # callback=log_intermediate,
+      # noise_sampler=noise_sampler,
+    )
+    # latents: Tensor = sample_dpm_adaptive(
+    #   denoiser,
+    #   latents * sigmas[0],
+    #   sigma_min=sigma_min,
+    #   sigma_max=sigma_max,
+    #   extra_args=extra_args,
+    #   # noise_sampler=noise_sampler,
+    #   rtol=.003125,
+    #   atol=.0004875,
+    # )
+    pil_images: List[Image.Image] = latents_to_pils(latents)
+    print(f'generated {batch_size} images in {time.perf_counter()-tic} seconds')
 
-sample_path='out'
-os.makedirs(sample_path, exist_ok=True)
-base_count = len(os.listdir(sample_path))
-for ix, image in enumerate(pil_images):
-  image.save(os.path.join(sample_path, f"{base_count+ix:05}.png"))
+    base_count = len(os.listdir(sample_path))
+    for ix, image in enumerate(pil_images):
+      image.save(os.path.join(sample_path, f"{base_count+ix:05}.{seed+iter}.png"))
 
-print(f'in total, generated {batch_size} batches of {num_images_per_prompt} images in {toc-tic} seconds')
+print(f'in total, generated {n_iter} batches of {num_images_per_prompt} images in {time.perf_counter()-batch_tic} seconds')
