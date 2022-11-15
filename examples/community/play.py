@@ -553,6 +553,8 @@ class SamplerWrapper:
       cond_scale = cond_scale.to(dtype=torch.float16, device='cpu')
     else:
       cond_scale = torch.tensor([cond_scale], dtype=torch.float16, device='cpu')
+    if uncond is None:
+      uncond = torch.zeros_like(cond)
     args = {
       "latents": latents.to(dtype=torch.float16, device='cpu').numpy(),
       "cond": cond.to(dtype=torch.float16, device='cpu').numpy(),
