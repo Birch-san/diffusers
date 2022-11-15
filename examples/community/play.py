@@ -549,11 +549,15 @@ class SamplerWrapper:
   ) -> UNet2DConditionOutput:
     dtype = latents.dtype
     device = latents.device
+    if torch.is_tensor(cond_scale):
+      cond_scale = cond_scale.to(dtype=torch.float16, device='cpu')
+    else:
+      cond_scale = torch.tensor([cond_scale], dtype=torch.float16, device='cpu')
     args = {
       "latents": latents.to(dtype=torch.float16, device='cpu').numpy(),
       "cond": cond.to(dtype=torch.float16, device='cpu').numpy(),
       "uncond": uncond.to(dtype=torch.float16, device='cpu').numpy(),
-      "cond_scale": cond_scale.to(dtype=torch.float16, device='cpu').numpy(),
+      "cond_scale": cond_scale.numpy(),
     }
     prediction = self.ml_model.predict(args)
     for v in prediction.values():
@@ -564,7 +568,7 @@ if loading_coreml_model:
   compute_units=ct.ComputeUnit.ALL if loading_coreml_ane else ct.ComputeUnit.CPU_AND_GPU
   print(f"loading CoreML model '{mlp_name}'")
   assert Path(mlp_name).exists()
-  cm_model = MLModel(mlp_name, compute_units=compute_units, dtype=torch.float16)
+  cm_model = MLModel(mlp_name, compute_units=compute_units)
   print("loaded")
   if coreml_sampler:
     sampler = SamplerWrapper(cm_model)
