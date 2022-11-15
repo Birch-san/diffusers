@@ -38,11 +38,11 @@ from coremltools.models import MLModel
 # 5 DPMSolver++ steps, limited sigma schedule
 prototyping = True
 # 128x128 images, for even more extreme prototyping
-smol = prototyping and False
+smol = prototyping and True
 cfg_enabled = True
 benchmarking = not prototyping and False
 coreml_sampler = True
-saving_coreml_model = False
+saving_coreml_model = True
 # we shouldn't attempt to load CoreML model during the same run as when saving it, because sampling+VAE+encoder will be on-CPU and wrong dtype
 loading_coreml_model = not saving_coreml_model and False
 loading_coreml_ane = loading_coreml_model and False
