@@ -29,6 +29,8 @@ from transformers import CLIPTextModel, PreTrainedTokenizer
 from typing import Tuple, TypeAlias, Union, List, Optional, Callable, TypedDict
 from PIL import Image
 import time
+from random import randint
+import numpy as np
 
 import coremltools as ct
 from pathlib import Path
@@ -39,10 +41,20 @@ from coremltools.models import MLModel
 prototyping = True
 # 128x128 images, for even more extreme prototyping
 smol = prototyping and True
+tall = False
 cfg_enabled = True
 benchmarking = not prototyping and False
 coreml_sampler = True
 saving_coreml_model = True
+searching = False
+start_seed = 2178792735
+# start_seed = 68673924
+seeds = [
+  start_seed,
+  # 2178792735,
+  # 1167622662,
+]
+# seeds = None
 # we shouldn't attempt to load CoreML model during the same run as when saving it, because sampling+VAE+encoder will be on-CPU and wrong dtype
 loading_coreml_model = not saving_coreml_model and False
 loading_coreml_ane = loading_coreml_model and False
@@ -152,11 +164,19 @@ class Sampler(nn.Module):
     unet_k_wrapped = DiffusersSDDenoiser(unet, alphas_cumprod)
     self.denoiser = CFGDenoiser(unet_k_wrapped)
     if prototyping:
+      # aggressively short sigma schedule; for cheap iteration
       steps=5
       sigma_max=torch.tensor(7.0796, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
       sigma_min=torch.tensor(0.0936, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
       rho=9.
+    elif searching:
+      # cheap but reasonably good results; for exploring seeds to pick one to subsequently master in more detail
+      steps=8
+      sigma_max=unet_k_wrapped.sigma_max
+      sigma_min=torch.tensor(0.0936, device=alphas_cumprod.device, dtype=alphas_cumprod.dtype)
+      rho=7.
     else:
+      # higher quality, but still not too expensive
       steps=15
       sigma_max=unet_k_wrapped.sigma_max
       sigma_min=unet_k_wrapped.sigma_min
@@ -617,18 +637,21 @@ os.makedirs(sample_path, exist_ok=True)
 
 # prompt = "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave"
 # prompt = 'aqua (konosuba), carnelian, general content, one girl, looking at viewer, blue hair, bangs, medium breasts, frills, blue skirt, blue shirt, detached sleeves, long hair, blue eyes, green ribbon, sleeveless shirt, gem, thighhighs under boots, watercolor (medium), traditional media'
-prompt = 'artoria pendragon (fate), carnelian, 1girl, general content, upper body, white shirt, blonde hair, looking at viewer, medium breasts, hair between eyes, floating hair, green eyes, blue ribbon, long sleeves, light smile, hair ribbon, watercolor (medium), traditional media'
+# prompt = 'artoria pendragon (fate), carnelian, 1girl, general content, upper body, white shirt, blonde hair, looking at viewer, medium breasts, hair between eyes, floating hair, green eyes, blue ribbon, long sleeves, light smile, hair ribbon, watercolor (medium), traditional media'
+prompt = 'konpaku youmu, sazanami mio, from side, white shirt, green skirt, silver hair, looking at viewer, small breasts, hair between eyes, floating hair, short hair, neck ribbon, short sleeves, hair ribbon, hairband, bangs, miniskirt, vest, marker (medium), colored pencil (medium)'
 # prompt = 'rem (re:zero), carnelian, 1girl, upper body, blue hair, looking at viewer, medium breasts, hair between eyes, floating hair, blue eyes, blue hair, short hair, roswaal mansion maid uniform, detached sleeves, detached collar, ribbon trim, maid headdress, x hair ornament, sunset, marker (medium)'
 # prompt = 'matou sakura, carnelian, 1girl, purple hair, looking at viewer, medium breasts, hair between eyes, floating hair, purple eyes, long hair, long sleeves, collared shirt, brown vest, black skirt, white sleeves, school uniform, red ribbon, wide hips, lying, marker (medium)'
 # prompt = 'willy wonka'
 unprompts = [''] if cfg_enabled else []
 prompts = [*unprompts, prompt]
 
-n_iter = 20 if benchmarking else 1
+n_iter = len(seeds) if seeds is not None else (
+  20 if benchmarking or searching else 1
+)
 batch_size = 1
 num_images_per_prompt = 1
 width = 128 if smol else 512
-height = width
+height = int(width * 1.25) if tall else width
 latent_channels = 4 # could use unet.in_channels, but we won't have that if loading a CoreML Unet
 latents_shape = (batch_size * num_images_per_prompt, latent_channels, height // 8, width // 8)
 with no_grad():
@@ -644,9 +667,12 @@ with no_grad():
 
   batch_tic = time.perf_counter()
   for iter in range(n_iter):
-    # seed=68673924
-    seed=2178792735
-    generator = Generator(device='cpu').manual_seed(seed+iter)
+    seed=seeds[iter] if seeds is not None else (
+      (
+        randint(np.iinfo(np.uint32).min, np.iinfo(np.uint32).max)
+      ) if searching else start_seed + iter
+    )
+    generator = Generator(device='cpu').manual_seed(seed)
     latents = randn(latents_shape, generator=generator, device='cpu', dtype=torch_dtype).to(device)
 
     tic = time.perf_counter()
@@ -662,6 +688,6 @@ with no_grad():
 
     base_count = len(os.listdir(sample_path))
     for ix, image in enumerate(pil_images):
-      image.save(os.path.join(sample_path, f"{base_count+ix:05}.{seed+iter}.png"))
+      image.save(os.path.join(sample_path, f"{base_count+ix:05}.{seed}.png"))
 
 print(f'in total, generated {n_iter} batches of {num_images_per_prompt} images in {time.perf_counter()-batch_tic} seconds')
