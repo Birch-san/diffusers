@@ -1,10 +1,12 @@
 #
 # For licensing see accompanying LICENSE.md file.
 # Copyright (C) 2022 Apple Inc. All Rights Reserved.
+# modified by Alex Birch to add support for cross-attention
 #
 
 import torch
 import torch.nn as nn
+from einops import rearrange
 
 from .layer_norm import LayerNormANE
 
@@ -14,8 +16,9 @@ class MultiHeadAttention(nn.Module):
     """
 
     def __init__(self,
-                 embed_dim,
-                 d_qk=None,
+                 embed_dim: int,
+                 d_q=None,
+                 d_k=None,
                  d_v=None,
                  d_out=None,
                  n_head=8,
@@ -24,8 +27,11 @@ class MultiHeadAttention(nn.Module):
         """
         Args:
             embed_dim:          Dimensionality of the input embeddings
-            d_qk:               Dimensionality of the query and key embeddings. They must match in order to compute
-                                dot product attention. If None, it is set to that of the input tensors, i.e. `embed_dim`
+            d_q:                Dimensionality of the query embedding. When d_q matches d_k (e.g. self-attention): 
+                                perf is expected to be good. Otherwise (i.e. cross-attention) I dunno.
+                                If None, it is set to that of the input tensors, i.e. `embed_dim`
+            d_k:                Dimensionality of the query embedding. When d_k matches d_q (e.g. self-attention): 
+                                perf is expected to be good. Otherwise (i.e. cross-attention) I dunno.
             d_v:                Dimensionality of the value embeddings. It may differ from that of the query and
                                 key embeddings. If None, it is set to that of the input tensors.
             d_out:              Dimensionality of the output projection. If None, it is set to that of the input tensors
@@ -35,22 +41,26 @@ class MultiHeadAttention(nn.Module):
         """
         super().__init__()
 
-        self.d_qk = d_qk or embed_dim
+        self.d_q = d_q or embed_dim
+        self.d_k = d_k or embed_dim
         self.d_v = d_v or embed_dim
+        self.is_self_attention = self.d_q == self.d_k
         self.d_out = d_out or embed_dim
 
         self.n_head = n_head
-        if self.d_qk % self.n_head != 0 or self.d_v % self.n_head != 0:
-            raise ValueError(
-                f"Either query-key dimensions ({self.d_qk}) or the value embeddings "
-                f"dimensions ({self.d_v}) is not divisible by n_head ({self.n_head})"
-            )
-        self.q_normalize_fact = float(self.d_qk // self.n_head)**-0.5
+        if self.d_q % self.n_head != 0:
+            raise ValueError(f"Query embedding dimensions ({self.d_q}) are indivisible by n_head ({self.n_head})")
+        if self.d_k % self.n_head != 0:
+            raise ValueError(f"Key embedding dimensions ({self.d_k}) are indivisible by n_head ({self.n_head})")
+        if self.d_v % self.n_head != 0:
+            raise ValueError(f"Value embedding dimensions ({self.d_k}) are indivisible by n_head ({self.n_head})")
+        self.dim_head = embed_dim // n_head
+        self.dp_scale = float(self.dim_head)**-0.5
 
-        self.q_proj = nn.Conv2d(embed_dim, self.d_qk, 1)
+        self.q_proj = nn.Conv2d(embed_dim, self.d_q, 1)
         self.v_proj = nn.Conv2d(embed_dim, self.d_v, 1)
-        self.k_proj = nn.Conv2d(embed_dim, self.d_qk, 1)
-        self.out_proj = nn.Conv2d(self.d_v, self.d_out, 1)
+        self.k_proj = nn.Conv2d(embed_dim, self.d_k, 1)
+        self.out_proj = nn.Conv2d(embed_dim, self.d_out, 1)
         self.dropout = nn.Dropout(dropout) if dropout > 0. else nn.Identity()
 
         self.apply(self._reset_parameters)
@@ -65,8 +75,8 @@ class MultiHeadAttention(nn.Module):
         """Core routine for computing multi-head attention
 
         Args:
-            q:              Projected query embeddings of shape (batch_size, d_qk, 1, tgt_seq_len)
-            k:              Projected key embeddings of shape (batch_size, d_qk, 1, src_seq_len)
+            q:              Projected query embeddings of shape (batch_size, d_q, 1, tgt_seq_len)
+            k:              Projected key embeddings of shape (batch_size, d_k, 1, src_seq_len)
             v:              Projected value embeddings of shape (batch_size, d_v, 1, src_seq_len)
             qk_mask:        Float tensor of shape (batch_size, src_seq_len, 1, tgt_seq_len).
                             Indices with the a high negative value, e.g. -1e4, are excluded from attention
@@ -80,19 +90,19 @@ class MultiHeadAttention(nn.Module):
         # Principle 2: Chunking Large Intermediate Tensors  (machinelearning.apple.com/research/apple-neural-engine)
         # Split q, k and v to compute a list of single-head attention functions
         mh_q = q.split(
-            self.d_qk // self.n_head,
-            dim=1)  # n_head * (batch_size, d_qk/n_head, 1, tgt_seq_len)
+            self.dim_head,
+            dim=1)  # n_head * (batch_size, d_q/n_head, 1, tgt_seq_len)
         # Principle 3: Minimizing Memory Copies
         # Avoid as many transposes and reshapes as possible
         mh_k = k.transpose(1, 3).split(
-            self.d_qk // self.n_head,
-            dim=3)  # n_head * (batch_size, src_seq_len, 1, d_qk/n_head)
+            self.dim_head,
+            dim=3)
         mh_v = v.split(
-            self.d_v // self.n_head,
+            self.dim_head,
             dim=1)  # n_head * (batch_size, d_v/n_head, 1, src_seq_len)
 
         attn_weights = [
-            torch.einsum('bchq,bkhc->bkhq', [qi, ki]) * self.q_normalize_fact
+            torch.einsum('bchq,bkhc->bkhq', [qi, ki]) * self.dp_scale
             for qi, ki in zip(mh_q, mh_k)
         ]  # n_head * (batch_size, src_seq_len, 1, tgt_seq_len)
 
@@ -204,7 +214,7 @@ class MultiHeadAttention(nn.Module):
                                                 return_weights)
 
         # Revert to original dimension permutation
-        attn = attn.contiguous().view(b, self.d_v, ht, wt)
+        attn = attn.contiguous().view(b, self.inner_dim, ht, wt)
 
         attn = self.out_proj(attn)
 

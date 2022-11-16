@@ -47,8 +47,11 @@ saving_coreml_model = True
 loading_coreml_model = not saving_coreml_model and False
 loading_coreml_ane = loading_coreml_model and False
 using_ane_self_attention = False
+using_ane_self_attention = True
+using_ane_cross_attention = True
 using_torch_self_attention = False
 replacing_self_attention = using_ane_self_attention or using_torch_self_attention
+replacing_attention = replacing_self_attention or using_ane_cross_attention
 # workaround for two bad combinations
 # on MPS, batching encounters correctness issues when using ANE-optimized self-attention
 # on CoreML, batching encounters "Error computing NN outputs" issues when **not** using ANE-optimized self-attention
@@ -271,9 +274,10 @@ class AMHADelegator(MultiHeadAttention):
       dropout=dropout,
       bias=bias,
       batch_first=True,
-      d_qk=cross_attention_dim,
+      d_q=query_dim,
+      d_k=cross_attention_dim,
       d_v=cross_attention_dim,
-      # d_out=cross_attention_dim,
+      d_out=query_dim,
     )
   
   def forward(self, hidden_states: Tensor, context: Optional[Tensor]=None) -> Tensor:
@@ -336,21 +340,29 @@ def to_aln(ln: nn.LayerNorm) -> LayerNormANE:
   return aln
 
 def replace_attention(module: nn.Module) -> None:
-  assert using_torch_self_attention or using_ane_self_attention
   for name, m in module.named_children():
     if isinstance(m, CrossAttention):
       # is self-attention?
-      if m.to_q.in_features == m.to_k.in_features:
-        if using_torch_self_attention:
-          mha: MultiheadAttention = to_mha(m)
-        elif using_ane_self_attention:
-          mha: AMHADelegator = to_amha(m)
+      is_self_attention = m.to_q.in_features == m.to_k.in_features
+      if is_self_attention:
+        if replacing_self_attention:
+          if using_torch_self_attention:
+            mha: MultiheadAttention = to_mha(m)
+          elif using_ane_self_attention:
+            mha: AMHADelegator = to_amha(m)
+          setattr(module, name, mha)
+      elif using_ane_cross_attention:
+        mha: AMHADelegator = to_amha(m)
         setattr(module, name, mha)
-    elif using_ane_self_attention and isinstance(m, BasicTransformerBlock):
-      aln: LayerNormANE = to_aln(m.norm1)
-      setattr(m, 'norm1', aln)
+    elif isinstance(m, BasicTransformerBlock):
+      if using_ane_self_attention:
+        aln: LayerNormANE = to_aln(m.norm1)
+        setattr(m, 'norm1', aln)
+      if using_ane_cross_attention:
+        aln: LayerNormANE = to_aln(m.norm2)
+        setattr(m, 'norm2', aln)
 
-if replacing_self_attention and not loading_coreml_model:
+if replacing_attention and not loading_coreml_model:
   unet.apply(replace_attention)
 
 class Undictifier(nn.Module):
