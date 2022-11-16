@@ -19,13 +19,12 @@ import torch
 from torch import Generator, Tensor, randn, linspace, cumprod, no_grad, nn
 from apple.multihead_attention import MultiHeadAttention
 from apple.layer_norm import LayerNormANE
-from diffusers.pipelines import StableDiffusionPipeline
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
 from diffusers.models.attention import BasicTransformerBlock, CrossAttention, MultiheadAttention, to_mha
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
 from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler, sample_dpm_adaptive, sample_dpmpp_2m
-from transformers import CLIPTextModel, PreTrainedTokenizer
+from transformers import CLIPTextModel, PreTrainedTokenizer, CLIPTokenizer, logging
 from typing import Tuple, TypeAlias, Union, List, Optional, Callable, TypedDict
 from PIL import Image
 import time
@@ -236,6 +235,17 @@ class Sampler(nn.Module):
     # )
     return latents
 
+class log_level:
+  orig_log_level: int
+  log_level: int
+  def __init__(self, log_level: int):
+    self.log_level = log_level
+    self.orig_log_level = logging.get_verbosity()
+  def __enter__(self):
+    logging.set_verbosity(self.log_level)
+  def __exit__(self, exc_type, exc_value, exc_traceback):
+    logging.set_verbosity(self.orig_log_level)
+
 revision=None
 torch_dtype=None
 if saving_coreml_model:
@@ -248,27 +258,31 @@ else:
     torch_dtype=torch.float16
   device = torch.device('mps')
 
-coreml_modules = ['unet'] if loading_coreml_model else []
-omit_modules = ['safety_checker', *coreml_modules]
+model_name = (
+  # 'CompVis/stable-diffusion-v1-4'
+  'hakurei/waifu-diffusion'
+  # 'runwayml/stable-diffusion-v1-5'
+)
+if not loading_coreml_model:
+  unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
+    model_name,
+    subfolder='unet',
+    revision=revision,
+    torch_dtype=torch_dtype,
+  ).to(device)
+  sampler = Sampler(unet)
 
-pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
-  # "/Users/birch/git/stable-diffusion-v1-4",
-  'hakurei/waifu-diffusion',
-  # 'runwayml/stable-diffusion-v1-5',
+# vae_model_name = 'hakurei/waifu-diffusion-v1-4' if model_name == 'hakurei/waifu-diffusion' else model_name
+vae: AutoencoderKL = AutoencoderKL.from_pretrained(
+  model_name,
+  subfolder='vae',
   revision=revision,
   torch_dtype=torch_dtype,
-  **{ key: None for key in omit_modules }
-)
+).to(device)
 
-pipe = pipe.to(device)
-
-text_encoder: CLIPTextModel = pipe.text_encoder
-tokenizer: PreTrainedTokenizer = pipe.tokenizer
-if not loading_coreml_model:
-  unet: UNet2DConditionModel = pipe.unet
-  unet.eval()
-  sampler = Sampler(unet)
-vae: AutoencoderKL = pipe.vae
+tokenizer: PreTrainedTokenizer = CLIPTokenizer.from_pretrained('openai/clip-vit-large-patch14')
+with log_level(logging.ERROR):
+  text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained('openai/clip-vit-large-patch14', torch_dtype=torch_dtype).to(device)
 
 class AMHADelegator(MultiHeadAttention):
   def __init__(
@@ -655,7 +669,7 @@ height = int(width * 1.25) if tall else width
 latent_channels = 4 # could use unet.in_channels, but we won't have that if loading a CoreML Unet
 latents_shape = (batch_size * num_images_per_prompt, latent_channels, height // 8, width // 8)
 with no_grad():
-  tokens = pipe.tokenizer(prompts, padding="max_length", max_length=tokenizer.model_max_length, return_tensors="pt")
+  tokens = tokenizer(prompts, padding="max_length", max_length=tokenizer.model_max_length, return_tensors="pt")
   text_input_ids: Tensor = tokens.input_ids
   text_embeddings: Tensor = text_encoder(text_input_ids.to(device))[0]
   chunked = text_embeddings.chunk(text_embeddings.size(0))
