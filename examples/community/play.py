@@ -323,7 +323,7 @@ class AMHADelegator(MultiHeadAttention):
       k=context,
       v=context,
     )
-    out = out.squeeze(2).transpose(2,1)
+    # out = out.squeeze(2).transpose(2,1)
     return out
 
 def linear_to_conv2d(state: Tensor) -> Tensor:
