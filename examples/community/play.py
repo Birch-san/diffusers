@@ -317,10 +317,7 @@ class AMHADelegator(MultiHeadAttention):
   
   def forward(self, hidden_states: Tensor, context: Optional[Tensor]=None) -> Tensor:
     # TODO: we're probably undoing a permute from upstream, so just eliminate that
-    # hidden_states = hidden_states.permute(0,2,1).unsqueeze(2)
     context = context.transpose(2,1).unsqueeze(2) if context is not None else hidden_states
-    # hidden_states = hidden_states.unsqueeze(2)
-    # context = context.unsqueeze(2) if context is not None else hidden_states
     out, _ = super().forward(
       q=hidden_states,
       k=context,
