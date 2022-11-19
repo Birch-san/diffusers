@@ -427,11 +427,15 @@ class BasicTransformerBlock(nn.Module):
             self.attn2._use_memory_efficient_attention_xformers = use_memory_efficient_attention_xformers
 
     def forward(self, hidden_states, context=None, timestep=None):
+        # TODO: factor this into a residual self-attention block,
+        #       so for the ANE path we can retain the transposed hidden_states and use as residual
         # 1. Self-Attention
         norm_hidden_states = (
             self.norm1(hidden_states, timestep) if self.use_ada_layer_norm else self.norm1(hidden_states)
         )
         hidden_states = self.attn1(norm_hidden_states) + hidden_states
+
+        # do we have some permute between these? can we skip it?
 
         # 2. Cross-Attention
         norm_hidden_states = (
@@ -441,6 +445,8 @@ class BasicTransformerBlock(nn.Module):
 
         # 3. Feed-forward
         hidden_states = self.ff(self.norm3(hidden_states)) + hidden_states
+        # problem is Apple's residual FF works more like this
+        # hidden_states = self.norm3(self.ff(hidden_states) + hidden_states)
 
         return hidden_states
 

@@ -19,8 +19,9 @@ import torch
 from torch import Generator, Tensor, randn, linspace, cumprod, no_grad, nn
 from apple.multihead_attention import MultiHeadAttention
 from apple.layer_norm import LayerNormANE
+from apple.ffn import FFN
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
-from diffusers.models.attention import BasicTransformerBlock, CrossAttention, MultiheadAttention, to_mha
+from diffusers.models.attention import GEGLU, BasicTransformerBlock, CrossAttention, FeedForward, MultiheadAttention, to_mha
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
 from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler, sample_dpm_adaptive, sample_dpmpp_2m
@@ -373,6 +374,27 @@ def to_aln(ln: nn.LayerNorm) -> LayerNormANE:
   aln.bias.data = ln.bias.data / ln.weight.data
   return aln
 
+def to_aff(ff: FeedForward) -> FFN:
+  ff_layers: Tuple[GEGLU, nn.Dropout, nn.Linear] = ff.net
+  geglu, dropout, lin_out = ff_layers
+  relu_in_dim = geglu.proj.out_features
+  relu_out_dim, io_dim = lin_out.in_features, lin_out.out_features
+  aff = FFN(
+    embed_dim=io_dim,
+    ffn_dim=relu_out_dim,
+    dropout=dropout.p
+  )
+  _, _, dropout_, c2d_out = aff.layers
+  relu_out = nn.Conv2d(io_dim, relu_in_dim, 1)
+  initialize_from_linear(relu_out, geglu.proj)
+  initialize_from_linear(c2d_out, lin_out)
+  aff.layers = nn.ModuleList([
+    geglu,
+    dropout_,
+    c2d_out,
+  ])
+  return aff
+
 def replace_attention(module: nn.Module) -> None:
   for name, m in module.named_children():
     if isinstance(m, CrossAttention):
@@ -395,6 +417,10 @@ def replace_attention(module: nn.Module) -> None:
       if using_ane_cross_attention:
         aln: LayerNormANE = to_aln(m.norm2)
         setattr(m, 'norm2', aln)
+      aln: LayerNormANE = to_aln(m.norm3)
+      setattr(m, 'norm3', aln)
+      aff: FFN = to_aff(m.ff)
+      setattr(m, 'ff', aff)
 
 if replacing_attention and not loading_coreml_model:
   unet.apply(replace_attention)
