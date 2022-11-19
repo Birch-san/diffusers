@@ -285,142 +285,16 @@ tokenizer: PreTrainedTokenizer = CLIPTokenizer.from_pretrained('openai/clip-vit-
 with log_level(logging.ERROR):
   text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained('openai/clip-vit-large-patch14', torch_dtype=torch_dtype).to(device)
 
-class AMHADelegator(MultiHeadAttention):
-  def __init__(
-    self,
-    query_dim: int,
-    cross_attention_dim: Optional[int] = None,
-    heads: int = 8,
-    dim_head: int = 64,
-    dropout: float = 0.0,
-    bias=False,
-  ):
-    inner_dim = dim_head * heads
-    cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
-    # debug
-    self.inner_dim = inner_dim
-    self.embed_dim = inner_dim
-    self.dim_head = dim_head
-    self.heads = heads
-    self.cross_attention_dim = cross_attention_dim
-    super().__init__(
-      embed_dim=inner_dim,
-      n_head=heads,
-      dropout=dropout,
-      bias=bias,
-      batch_first=True,
-      d_q=query_dim,
-      d_k=cross_attention_dim,
-      d_v=cross_attention_dim,
-      d_out=query_dim,
-    )
-  
-  def forward(self, hidden_states: Tensor, context: Optional[Tensor]=None) -> Tensor:
-    # TODO: we're probably undoing a permute from upstream, so just eliminate that
-    context = context.transpose(2,1).unsqueeze(2) if context is not None else hidden_states
-    out, _ = super().forward(
-      q=hidden_states,
-      k=context,
-      v=context,
-    )
-    # out = out.squeeze(2).transpose(2,1)
-    return out
-
-def linear_to_conv2d(state: Tensor) -> Tensor:
-  """
-  adapts the weights or biases of an nn.Linear to be compatible with an nn.Conv2d
-  by unsqueezing the final dimension twice
-  """
-  # TODO: would this benefit from .contiguous()?
-  return state.view(*state.shape, 1, 1)
-
-def initialize_from_linear(conv: nn.Conv2d, linear: nn.Linear) -> None:
-  """
-  initializes an nn.Conv2d layer with the weights and biases from a nn.Linear layer
-  """
-  conv.weight.data = linear_to_conv2d(linear.weight.data)
-  if linear.bias is None:
-    # since there's no bias Tensor to copy: we don't get a device/dtype transfer for free, so must do so explicitly
-    # conv.bias.data = conv.bias.data.to(device=conv.weight.data.device, dtype=conv.weight.data.dtype)
-    conv.bias.data = torch.zeros(linear.out_features, device=conv.weight.data.device, dtype=conv.weight.data.dtype)
-  else:
-    conv.bias.data = linear.bias.data
-
-
-def to_amha(ca: CrossAttention) -> AMHADelegator:
-  bias = ca.to_k.bias is not None
-  assert bias == False
-  mha = AMHADelegator(
-    query_dim=ca.to_q.in_features,
-    cross_attention_dim=ca.to_k.in_features,
-    heads=ca.heads,
-    dim_head=ca.to_q.out_features//ca.heads,
-    dropout=ca.to_out[1].p,
-    bias=bias,
-  )
-  initialize_from_linear(mha.q_proj, ca.to_q)
-  initialize_from_linear(mha.k_proj, ca.to_k)
-  initialize_from_linear(mha.v_proj, ca.to_v)
-  initialize_from_linear(mha.out_proj, ca.to_out[0])
-  return mha
-
-def to_aln(ln: nn.LayerNorm) -> LayerNormANE:
-  dim, = ln.normalized_shape
-  aln = LayerNormANE(dim)
-  aln.weight.data = ln.weight.data
-  aln.bias.data = ln.bias.data / ln.weight.data
-  return aln
-
-def to_aff(ff: FeedForward) -> FFN:
-  ff_layers: Tuple[GEGLU, nn.Dropout, nn.Linear] = ff.net
-  geglu, dropout, lin_out = ff_layers
-  relu_in_dim = geglu.proj.out_features
-  relu_out_dim, io_dim = lin_out.in_features, lin_out.out_features
-  aff = FFN(
-    embed_dim=io_dim,
-    ffn_dim=relu_out_dim,
-    dropout=dropout.p
-  )
-  _, _, dropout_, c2d_out = aff.layers
-  relu_out = nn.Conv2d(io_dim, relu_in_dim, 1)
-  initialize_from_linear(relu_out, geglu.proj)
-  initialize_from_linear(c2d_out, lin_out)
-  aff.layers = nn.ModuleList([
-    geglu,
-    dropout_,
-    c2d_out,
-  ])
-  return aff
-
-def replace_attention(module: nn.Module) -> None:
-  for name, m in module.named_children():
-    if isinstance(m, CrossAttention):
-      # is self-attention?
-      is_self_attention = m.to_q.in_features == m.to_k.in_features
-      if is_self_attention:
-        if replacing_self_attention:
-          if using_torch_self_attention:
-            mha: MultiheadAttention = to_mha(m)
-          elif using_ane_self_attention:
-            mha: AMHADelegator = to_amha(m)
-          setattr(module, name, mha)
-      elif using_ane_cross_attention:
-        mha: AMHADelegator = to_amha(m)
-        setattr(module, name, mha)
-    elif isinstance(m, BasicTransformerBlock):
-      if using_ane_self_attention:
-        aln: LayerNormANE = to_aln(m.norm1)
-        setattr(m, 'norm1', aln)
-      if using_ane_cross_attention:
-        aln: LayerNormANE = to_aln(m.norm2)
-        setattr(m, 'norm2', aln)
-      aln: LayerNormANE = to_aln(m.norm3)
-      setattr(m, 'norm3', aln)
-      aff: FFN = to_aff(m.ff)
-      setattr(m, 'ff', aff)
-
 if replacing_attention and not loading_coreml_model:
-  unet.apply(replace_attention)
+  unet.apply(
+    partial(
+      replace_attention,
+      replacing_self_attention=replacing_self_attention,
+      using_torch_self_attention=using_torch_self_attention,
+      using_ane_self_attention=using_ane_self_attention,
+      using_ane_cross_attention=using_ane_cross_attention,
+    )
+  )
 
 class Undictifier(nn.Module):
   model: nn.Module
