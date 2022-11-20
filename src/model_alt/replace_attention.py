@@ -1,7 +1,8 @@
 from torch import nn
 from apple.ffn import FFN
 from apple.layer_norm import LayerNormANE
-from diffusers.models.attention import BasicTransformerBlock, CrossAttention
+from diffusers.models.attention import BasicTransformerBlock, CrossAttention, Transformer2DModel
+from model_alt.adapt_transformer import adapt_t2dm
 
 from .adapt_torch_mha import MultiheadAttention, to_mha
 from .adapt_ane_mha import AMHADelegator, to_amha
@@ -40,3 +41,5 @@ def replace_attention(
       setattr(m, 'norm3', aln)
       aff: FFN = to_aff(m.ff)
       setattr(m, 'ff', aff)
+    elif isinstance(m, Transformer2DModel):
+      adapt_t2dm(m)
