@@ -3,6 +3,7 @@ from typing import Tuple
 
 from apple.ffn import FFN
 from diffusers.models.attention import FeedForward, GEGLU
+from .adapt_geglu import adapt_geglu
 from .init_conv2d import initialize_from_linear
 
 
@@ -19,6 +20,8 @@ def to_aff(ff: FeedForward) -> FFN:
   _, _, dropout_, c2d_out = aff.layers
   relu_out = nn.Conv2d(io_dim, relu_in_dim, 1)
   initialize_from_linear(relu_out, geglu.proj)
+  geglu.proj = relu_out
+  adapt_geglu(geglu)
   initialize_from_linear(c2d_out, lin_out)
   aff.layers = nn.ModuleList([
     geglu,

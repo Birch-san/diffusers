@@ -1,3 +1,4 @@
+from functools import partial
 import sys, os
 # put repository root on CWD so that local diffusers is used
 sys.path.insert(1, f'{os.getcwd()}/src')
@@ -17,14 +18,11 @@ sampling.default_noise_sampler = lambda x: (
 
 import torch
 from torch import Generator, Tensor, randn, linspace, cumprod, no_grad, nn
-from apple.multihead_attention import MultiHeadAttention
-from apple.layer_norm import LayerNormANE
-from apple.ffn import FFN
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
-from diffusers.models.attention import GEGLU, BasicTransformerBlock, CrossAttention, FeedForward, MultiheadAttention, to_mha
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
-from k_diffusion.sampling import get_sigmas_karras, sample_heun, sample_dpmpp_2s_ancestral, BrownianTreeNoiseSampler, sample_dpm_adaptive, sample_dpmpp_2m
+from k_diffusion.sampling import get_sigmas_karras, sample_dpmpp_2m
+from model_alt.replace_attention import replace_attention
 from transformers import CLIPTextModel, PreTrainedTokenizer, CLIPTokenizer, logging
 from typing import Tuple, TypeAlias, Union, List, Optional, Callable, TypedDict
 from PIL import Image
@@ -34,7 +32,6 @@ import numpy as np
 
 import coremltools as ct
 from pathlib import Path
-import torch as th
 from coremltools.models import MLModel
 
 # 5 DPMSolver++ steps, limited sigma schedule
