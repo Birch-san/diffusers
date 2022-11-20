@@ -20,7 +20,8 @@ def forward(
   for block in self.transformer_blocks:
     hidden_states: Tensor = block(hidden_states, context=encoder_hidden_states, timestep=timestep)
 
-  hidden_states: Tensor = hidden_states.reshape(batch, height, weight, inner_dim).permute(0, 3, 1, 2)
+  # hidden_states: Tensor = hidden_states.reshape(batch, height, weight, inner_dim).permute(0, 3, 1, 2)
+  hidden_states: Tensor = hidden_states.unflatten(3, (height, weight)).squeeze(2)
   hidden_states: Tensor = self.proj_out(hidden_states)
   output: Tensor = hidden_states + residual
 
