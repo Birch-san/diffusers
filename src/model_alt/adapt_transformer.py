@@ -1,4 +1,3 @@
-from functools import partial
 from torch import Tensor
 from typing import Union, Tuple
 from diffusers.models.attention import Transformer2DModel, Transformer2DModelOutput
