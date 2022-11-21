@@ -1,21 +1,21 @@
 from functools import partial
 from torch import Tensor
 from diffusers.models.resnet import ResnetBlock2D
-from typing import Callable
-from typing_extensions import TypeAlias
+from typing import Protocol
 
 # from .adapt_groupnorm import to_agn, ANEGroupNorm
 from .tensor_decorator import TensorDecorator
 
-Forward: TypeAlias = Callable[[Tensor, Tensor], Tensor]
+class ResnetBlock2DForward(Protocol):
+  def forward(self: ResnetBlock2D, input_tensor: Tensor, temb: Tensor) -> Tensor: ...
 
-def forward(self: ResnetBlock2D, orig_fn: Forward, input_tensor: Tensor, temb: Tensor) -> Tensor:
-  batch, channels, height, width = input_tensor.shape
-  self.height = height
-  self.width = width
-  input_tensor: Tensor = input_tensor.flatten(2).unsqueeze(2)
+def forward(self: ResnetBlock2D, orig_fn: ResnetBlock2DForward, input_tensor: Tensor, temb: Tensor) -> Tensor:
+  # batch, channels, height, width = input_tensor.shape
+  # self.height = height
+  # self.width = width
+  # input_tensor: Tensor = input_tensor.flatten(2).unsqueeze(2)
   input_tensor: Tensor = orig_fn(input_tensor, temb)
-  input_tensor: Tensor = input_tensor.unflatten(3, (height, width)).squeeze(2)
+  # input_tensor: Tensor = input_tensor.unflatten(3, (height, width)).squeeze(2)
   return input_tensor
 
 def adapt_conv(self: ResnetBlock2D, orig_fn: TensorDecorator, input_tensor: Tensor) -> Tensor:

@@ -9,18 +9,18 @@ def forward(
   timestep=None,
   return_dict: bool = True,
 ) -> Union[Transformer2DModelOutput, Tuple[Tensor]]:
-  batch, channel, height, weight = hidden_states.shape
+  # batch, channel, height, weight = hidden_states.shape
   residual = hidden_states
   hidden_states = self.norm(hidden_states)
   hidden_states = self.proj_in(hidden_states)
   _, inner_dim, *_ = hidden_states.shape
   # hidden_states: Tensor = hidden_states.permute(0, 2, 3, 1).reshape(batch, height * weight, inner_dim)
-  hidden_states: Tensor = hidden_states.flatten(2).unsqueeze(2)
+  # hidden_states: Tensor = hidden_states.flatten(2).unsqueeze(2)
   for block in self.transformer_blocks:
     hidden_states: Tensor = block(hidden_states, context=encoder_hidden_states, timestep=timestep)
 
   # hidden_states: Tensor = hidden_states.reshape(batch, height, weight, inner_dim).permute(0, 3, 1, 2)
-  hidden_states: Tensor = hidden_states.unflatten(3, (height, weight)).squeeze(2)
+  # hidden_states: Tensor = hidden_states.unflatten(3, (self.height, self.weight)).squeeze(2)
   hidden_states: Tensor = self.proj_out(hidden_states)
   output: Tensor = hidden_states + residual
 
