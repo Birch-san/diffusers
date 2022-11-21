@@ -2,12 +2,14 @@ from torch import nn
 from apple.ffn import FFN
 from apple.layer_norm import LayerNormANE
 from diffusers.models.attention import BasicTransformerBlock, CrossAttention, Transformer2DModel
-from model_alt.adapt_transformer import adapt_t2dm
+from diffusers.models.resnet import ResnetBlock2D
 
 from .adapt_torch_mha import MultiheadAttention, to_mha
 from .adapt_ane_mha import AMHADelegator, to_amha
 from .adapt_ff import to_aff
 from .adapt_layernorm import to_aln
+from .adapt_transformer import adapt_t2dm
+from .adapt_rnb import adapt_rnb
 
 def replace_attention(
   module: nn.Module,
@@ -43,3 +45,5 @@ def replace_attention(
       setattr(m, 'ff', aff)
     elif isinstance(m, Transformer2DModel):
       adapt_t2dm(m)
+    elif isinstance(m, ResnetBlock2D):
+      adapt_rnb(m)
