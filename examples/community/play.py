@@ -293,6 +293,12 @@ if replacing_attention and not loading_coreml_model:
     )
   )
 
+def get_mlp_name(module_name: str) -> str:
+  return f'{module_name}.mlpackage'
+
+def get_scriptmodule_name(module_name: str) -> str:
+  return f'{module_name}.scriptmodule.pt'
+
 class Undictifier(nn.Module):
   model: nn.Module
   def __init__(self, model: nn.Module):
@@ -301,15 +307,16 @@ class Undictifier(nn.Module):
   def forward(self, *args, **kwargs): 
     return self.model(*args, **kwargs)["sample"]
 
-def convert_unet(pt_model: UNet2DConditionModel, out_name: str) -> None:
+def convert_unet(pt_model: UNet2DConditionModel, module_name: str) -> None:
   from coremltools.converters.mil import Builder as mb
   from coremltools.converters.mil.frontend.torch.torch_op_registry import register_torch_op, _TORCH_OPS_REGISTRY
   import coremltools.converters.mil.frontend.torch.ops as cml_ops
 
-  orig_baddbmm = torch.baddbmm
-  def fake_baddbmm(_: Tensor, batch1: Tensor, batch2: Tensor, beta: float, alpha: float):
-    return torch.bmm(batch1, batch2) * alpha
-  torch.baddbmm = fake_baddbmm
+  # coremltools 6.1.0 supports baddbmm
+  # orig_baddbmm = torch.baddbmm
+  # def fake_baddbmm(_: Tensor, batch1: Tensor, batch2: Tensor, beta: float, alpha: float):
+  #   return torch.bmm(batch1, batch2) * alpha
+  # torch.baddbmm = fake_baddbmm
 
   if "broadcast_to" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["broadcast_to"]
   @register_torch_op
@@ -335,8 +342,13 @@ def convert_unet(pt_model: UNet2DConditionModel, out_name: str) -> None:
       strict=False,
       check_trace=False
     )
+  print(f"finished tracing")
+  scriptmod_name: str = get_scriptmodule_name(module_name)
+  print(f"saving to '{scriptmod_name}'")
+  trace.save(scriptmod_name)
+  print(f"saved to '{scriptmod_name}'")
 
-  print("converting")
+  print("converting to CoreML")
   # https://github.com/apple/coremltools/blob/870213ba6545369335ac72e61127c8d20ea745e5/coremltools/converters/mil/mil/ops/defs/iOS15/elementwise_unary.py
   # /Users/birch/anaconda3/envs/diffnightly/lib/python3.10/site-packages/coremltools/converters/mil/mil/ops/defs/iOS15/elementwise_unary.py
   # ERROR: 'float' object has no attribute 'astype'
@@ -356,21 +368,23 @@ def convert_unet(pt_model: UNet2DConditionModel, out_name: str) -> None:
     skip_model_load=True
   )
 
-  print(f"saving to '{out_name}'")
-  cm_model.save(f"{out_name}")
-  print(f"saved")
+  mlp_name: str = get_mlp_name(module_name)
+  print(f"saving to '{mlp_name}'")
+  cm_model.save(f"{mlp_name}")
+  print(f"saved to '{mlp_name}'")
 
-  torch.baddbmm = orig_baddbmm
+  # torch.baddbmm = orig_baddbmm
 
-def convert_sampler(pt_model: Sampler, out_name: str) -> None:
+def convert_sampler(pt_model: Sampler, module_name: str) -> None:
   from coremltools.converters.mil import Builder as mb
   from coremltools.converters.mil.frontend.torch.torch_op_registry import register_torch_op, _TORCH_OPS_REGISTRY
   import coremltools.converters.mil.frontend.torch.ops as cml_ops
 
-  orig_baddbmm = torch.baddbmm
-  def fake_baddbmm(_: Tensor, batch1: Tensor, batch2: Tensor, beta: float, alpha: float):
-    return torch.bmm(batch1, batch2) * alpha
-  torch.baddbmm = fake_baddbmm
+  # coremltools 6.1.0 supports baddbmm
+  # orig_baddbmm = torch.baddbmm
+  # def fake_baddbmm(_: Tensor, batch1: Tensor, batch2: Tensor, beta: float, alpha: float):
+  #   return torch.bmm(batch1, batch2) * alpha
+  # torch.baddbmm = fake_baddbmm
 
   orig_new_ones = torch.Tensor.new_ones
   def fake_new_ones(self: Tensor, shape: Tuple[int, ...], *args, **kwargs):
@@ -414,8 +428,13 @@ def convert_sampler(pt_model: Sampler, out_name: str) -> None:
       strict=False,
       check_trace=False
     )
+  print(f"finished tracing")
+  scriptmod_name: str = get_scriptmodule_name(module_name)
+  print(f"saving to '{scriptmod_name}'")
+  trace.save(scriptmod_name)
+  print(f"saved to '{scriptmod_name}'")
 
-  print("converting")
+  print("converting to CoreML")
   cm_model = ct.convert(
     trace, 
     inputs=[
@@ -429,22 +448,24 @@ def convert_sampler(pt_model: Sampler, out_name: str) -> None:
     skip_model_load=True
   )
 
-  print(f"saving to '{out_name}'")
-  cm_model.save(f"{out_name}")
-  print(f"saved")
+  mlp_name: str = get_mlp_name(module_name)
+  print(f"saving to '{mlp_name}'")
+  cm_model.save(f"{mlp_name}")
+  print(f"saved to '{mlp_name}'")
 
-  torch.baddbmm = orig_baddbmm
+  # torch.baddbmm = orig_baddbmm
   torch.Tensor.new_ones = orig_new_ones
   torch.Tensor.argmin = orig_argmin
   torch.Tensor.expm1 = orig_expm1
 
-mlp_name='sampler.mlpackage' if coreml_sampler else 'unet.mlpackage'
+module_name = 'sampler' if coreml_sampler else 'unet_ane_optimized'
+mlp_name: str = get_mlp_name(module_name)
 if saving_coreml_model:
   if Path(mlp_name).exists():
     print(f"CoreML model '{mlp_name}' already exists")
   else:
     print("generating CoreML model")
-    convert_sampler(sampler, mlp_name) if coreml_sampler else convert_unet(unet, mlp_name) 
+    convert_sampler(sampler, module_name) if coreml_sampler else convert_unet(unet, module_name) 
     print(f"saved CoreML model '{mlp_name}'")
   # we refrain from loading the model and continuing, because our Unet, etc are on CPU/float32
   sys.exit()
