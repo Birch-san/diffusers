@@ -3,12 +3,13 @@ from apple.ffn import FFN
 from apple.layer_norm import LayerNormANE
 from diffusers.models.attention import BasicTransformerBlock, CrossAttention, Transformer2DModel
 from diffusers.models.resnet import ResnetBlock2D
-from diffusers.models.unet_2d_blocks import CrossAttnDownBlock2D, DownBlock2D, UNetMidBlock2DCrossAttn, UpBlock2D
+from diffusers.models.unet_2d_blocks import CrossAttnDownBlock2D, CrossAttnUpBlock2D, DownBlock2D, UNetMidBlock2DCrossAttn, UpBlock2D
 from diffusers.models.unet_2d_condition import UNet2DConditionModel
 
 from .adapt_torch_mha import MultiheadAttention, to_mha
 from .adapt_ane_mha import AMHADelegator, to_amha
 from .adapt_cadb import adapt_cadb
+from .adapt_caub import adapt_caub
 from .adapt_mbca import adapt_mbca
 from .adapt_db import adapt_db
 from .adapt_ub import adapt_ub
@@ -25,6 +26,8 @@ def replace_attention(
   using_ane_self_attention: bool,
   using_ane_cross_attention: bool,
   ) -> None:
+  if isinstance(module, UNet2DConditionModel):
+    adapt_uncm(module)
   for name, m in module.named_children():
     if isinstance(m, CrossAttention):
       # is self-attention?
@@ -62,5 +65,5 @@ def replace_attention(
       adapt_mbca(m)
     elif isinstance(m, UpBlock2D):
       adapt_ub(m)
-    elif isinstance(m, UNet2DConditionModel):
-      adapt_uncm(m)
+    elif isinstance(m, CrossAttnUpBlock2D):
+      adapt_caub(m)
