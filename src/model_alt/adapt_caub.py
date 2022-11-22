@@ -43,5 +43,5 @@ def forward(
 
   return hidden_states, height, width
 
-def adapt_caub(db: CrossAttnUpBlock2D) -> None:
-  setattr(db, 'forward', partial(forward.__get__(db), db.forward))
+def adapt_caub(caub: CrossAttnUpBlock2D) -> None:
+  setattr(caub, 'forward', partial(forward.__get__(caub), caub.forward))

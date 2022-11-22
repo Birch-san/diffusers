@@ -40,5 +40,5 @@ def forward(
 
   return hidden_states, height, width
 
-def adapt_ub(db: UpBlock2D) -> None:
-  setattr(db, 'forward', partial(forward.__get__(db), db.forward))
+def adapt_ub(ub: UpBlock2D) -> None:
+  setattr(ub, 'forward', partial(forward.__get__(ub), ub.forward))
