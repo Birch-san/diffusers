@@ -32,7 +32,7 @@ def forward(
     hidden_states: Tensor = resnet(hidden_states, temb, height=height, width=width)
     hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states).sample
 
-  if self.upsamplers is None:
+  if self.upsamplers is not None:
     # needs to be 2D again for upsampler, probably
     hidden_states: Tensor = hidden_states.unflatten(3, (height, width)).squeeze(2)
     for upsampler in self.upsamplers:
