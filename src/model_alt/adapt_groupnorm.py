@@ -3,9 +3,10 @@ from torch import nn, Tensor
 class ANEGroupNorm(nn.GroupNorm):
   def forward(self, input: Tensor) -> Tensor:
     batch, channels, height, width = input.shape
-    input: Tensor = input.flatten(2).unsqueeze(2)
+    input: Tensor = input.reshape(batch, channels, 1, height * width)
     input: Tensor = super().forward(input)
-    input: Tensor = input.unflatten(3, (height, width)).squeeze(2)
+    batch, channels, *_ = input.shape
+    input: Tensor = input.reshape(batch, channels, height, width)
     return input
 
 def to_agn(gn: nn.GroupNorm) -> ANEGroupNorm:

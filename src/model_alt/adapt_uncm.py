@@ -56,7 +56,7 @@ def forward(
   batch, channels, height, width = sample.shape
 
   # adapt BCHW to BC1S format; optimal for Neural Engine
-  sample = sample.flatten(2).unsqueeze(2)
+  sample = sample.reshape(batch, channels, 1, height * width)
 
   down_block_res_samples = (sample,)
   for downsample_block in self.down_blocks:
@@ -117,7 +117,8 @@ def forward(
         width=width,
       )
 
-  sample: Tensor = sample.unflatten(3, (height, width)).squeeze(2)
+  batch, channels, *_ = sample.shape
+  sample: Tensor = sample.reshape(batch, channels, height, width)
 
   sample = self.conv_norm_out(sample)
   sample = self.conv_act(sample)

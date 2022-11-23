@@ -31,9 +31,11 @@ def adapt_conv(
   orig_fn: TensorDecorator,
   input_tensor: Tensor
 ) -> Tensor:
-  input_tensor: Tensor = input_tensor.unflatten(3, (self.height, self.width)).squeeze(2)
+  batch, channels, _, _ = input_tensor.shape
+  input_tensor: Tensor = input_tensor.reshape(batch, channels, self.height, self.width)
   input_tensor: Tensor = orig_fn(input_tensor)
-  input_tensor: Tensor = input_tensor.flatten(2).unsqueeze(2)
+  batch, channels, _, _ = input_tensor.shape
+  input_tensor: Tensor = input_tensor.reshape(batch, channels, 1, self.height * self.width)
   return input_tensor
 
 

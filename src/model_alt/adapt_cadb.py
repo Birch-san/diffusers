@@ -22,11 +22,13 @@ def forward(
     output_states += (hidden_states,)
   if self.downsamplers is not None:
     # needs to be 2D again before downsampler convolves it.
-    hidden_states: Tensor = hidden_states.unflatten(3, (height, width)).squeeze(2)
+    batch, channels, *_ = hidden_states.shape
+    hidden_states: Tensor = hidden_states.reshape(batch, channels, height, width)
     for downsampler in self.downsamplers:
       hidden_states = downsampler(hidden_states)
       _, _, height, width = hidden_states.shape
-    hidden_states: Tensor = hidden_states.flatten(2).unsqueeze(2)
+    batch, channels, *_ = hidden_states.shape
+    hidden_states: Tensor = hidden_states.reshape(batch, channels, 1, height * width)
 
     output_states += (hidden_states,)
 

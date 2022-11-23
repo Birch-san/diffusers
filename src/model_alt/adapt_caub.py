@@ -34,12 +34,13 @@ def forward(
 
   if self.upsamplers is not None:
     # needs to be 2D again for upsampler, probably
-    hidden_states: Tensor = hidden_states.unflatten(3, (height, width)).squeeze(2)
+    batch, channels, *_ = hidden_states.shape
+    hidden_states: Tensor = hidden_states.reshape(batch, channels, height, width)
     for upsampler in self.upsamplers:
       hidden_states: Tensor = upsampler(hidden_states, upsample_size)
       _, _, height, width = hidden_states.shape
-    
-    hidden_states: Tensor = hidden_states.flatten(2).unsqueeze(2)
+    batch, channels, *_ = hidden_states.shape
+    hidden_states: Tensor = hidden_states.reshape(batch, channels, 1, height * width)
 
   return hidden_states, height, width
 
