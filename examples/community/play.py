@@ -472,9 +472,11 @@ if saving_coreml_model:
 
 class UNetWrapper:
   ml_model: MLModel
+  dtype: torch.dtype
   def __init__(self, ml_model: MLModel):
     self.ml_model = ml_model
     self.device = device
+    self.dtype = torch.float16
 
   def __call__(
     self, 
@@ -486,14 +488,14 @@ class UNetWrapper:
     dtype = sample.dtype
     device = sample.device
     args = {
-      "sample": sample.to(dtype=torch.float16, device='cpu').numpy(),
-      "timestep": timestep.to(dtype=torch.float16, device='cpu').int().numpy(),
-      "input_35": encoder_hidden_states.to(dtype=torch.float16, device='cpu').numpy(),
+      "sample_1": sample.to(dtype=self.dtype, device='cpu').numpy(),
+      "timestep": timestep.to(dtype=self.dtype, device='cpu').int().numpy(),
+      "context": encoder_hidden_states.to(dtype=self.dtype, device='cpu').numpy(),
     }
     prediction = self.ml_model.predict(args)
-    for v in prediction.values():
-      sample=torch.tensor(v, dtype=dtype, device=device)
-      return UNet2DConditionOutput(sample=sample)
+    v, *_ = prediction.values()
+    sample=torch.tensor(v, dtype=dtype, device=device)
+    return UNet2DConditionOutput(sample=sample)
 
 class SamplerWrapper:
   ml_model: MLModel
