@@ -319,6 +319,12 @@ def convert_unet(pt_model: UNet2DConditionModel, module_name: str) -> None:
   #   return torch.bmm(batch1, batch2) * alpha
   # torch.baddbmm = fake_baddbmm
 
+  # orig_unflatten = torch.Tensor.unflatten
+  # def fake_unflatten(self: Tensor, dim: int, shape: Tuple[int, int]) -> Tensor:
+  #   assert dim == 3
+  #   return self.reshape(*self.shape[:3], *shape)
+  # torch.Tensor.unflatten = fake_unflatten
+
   if "broadcast_to" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["broadcast_to"]
   @register_torch_op
   def broadcast_to(context, node): return cml_ops.expand(context, node)
@@ -375,6 +381,7 @@ def convert_unet(pt_model: UNet2DConditionModel, module_name: str) -> None:
   print(f"saved to '{mlp_name}'")
 
   # torch.baddbmm = orig_baddbmm
+  # torch.Tensor.unflatten = orig_unflatten
 
 def convert_sampler(pt_model: Sampler, module_name: str) -> None:
   from coremltools.converters.mil import Builder as mb
