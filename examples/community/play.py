@@ -268,6 +268,7 @@ if not loading_coreml_model:
     revision=revision,
     torch_dtype=torch_dtype,
   ).to(device)
+  unet.eval()
   sampler = Sampler(unet)
 
 # vae_model_name = 'hakurei/waifu-diffusion-v1-4' if model_name == 'hakurei/waifu-diffusion' else model_name
