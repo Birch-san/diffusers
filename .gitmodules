@@ -1,3 +1,6 @@
 [submodule "src/k-diffusion"]
 	path = src/k-diffusion
 	url = https://github.com/Birch-san/k-diffusion
+[submodule "src/coremltools"]
+	path = src/coremltools
+	url = https://github.com/Birch-san/coremltools.git

@@ -2,6 +2,7 @@ from functools import partial
 import sys, os
 # put repository root on CWD so that local diffusers is used
 sys.path.insert(1, f'{os.getcwd()}/src')
+sys.path.insert(1, f'{os.getcwd()}/src/coremltools')
 sys.path.insert(1, f'{os.getcwd()}/src/k-diffusion')
 
 # monkey-patch _randn to use CPU random before k-diffusion uses it
@@ -52,6 +53,7 @@ seeds = [
   # 1167622662,
 ]
 # seeds = None
+saving_coreml_ane = saving_coreml_model and True
 # we shouldn't attempt to load CoreML model during the same run as when saving it, because sampling+VAE+encoder will be on-CPU and wrong dtype
 loading_coreml_model = not saving_coreml_model and False
 loading_coreml_ane = loading_coreml_model and False
@@ -248,7 +250,10 @@ revision=None
 torch_dtype=None
 if saving_coreml_model:
   # gotta trace model on-CPU, and only float32 is supported
-  device = torch.device('cpu')
+  # device = torch.device('cpu')
+  device = torch.device('mps')
+  revision='fp16'
+  torch_dtype=torch.float16
   # could fp16 model revision make it trace any faster? probably not
 else:
   if half:
@@ -267,8 +272,7 @@ if not loading_coreml_model:
     subfolder='unet',
     revision=revision,
     torch_dtype=torch_dtype,
-  ).to(device)
-  unet.eval()
+  ).to(device).eval()
   sampler = Sampler(unet)
 
 # vae_model_name = 'hakurei/waifu-diffusion-v1-4' if model_name == 'hakurei/waifu-diffusion' else model_name
@@ -309,9 +313,9 @@ class Undictifier(nn.Module):
     return self.model(*args, **kwargs)["sample"]
 
 def convert_unet(pt_model: UNet2DConditionModel, module_name: str) -> None:
-  from coremltools.converters.mil import Builder as mb
-  from coremltools.converters.mil.frontend.torch.torch_op_registry import register_torch_op, _TORCH_OPS_REGISTRY
-  import coremltools.converters.mil.frontend.torch.ops as cml_ops
+  # from coremltools.converters.mil import Builder as mb
+  # from coremltools.converters.mil.frontend.torch.torch_op_registry import register_torch_op, _TORCH_OPS_REGISTRY
+  # import coremltools.converters.mil.frontend.torch.ops as cml_ops
 
   # coremltools 6.1.0 supports baddbmm
   # orig_baddbmm = torch.baddbmm
@@ -325,26 +329,26 @@ def convert_unet(pt_model: UNet2DConditionModel, module_name: str) -> None:
   #   return self.reshape(*self.shape[:3], *shape)
   # torch.Tensor.unflatten = fake_unflatten
 
-  if "broadcast_to" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["broadcast_to"]
-  @register_torch_op
-  def broadcast_to(context, node): return cml_ops.expand(context, node)
+  # if "broadcast_to" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["broadcast_to"]
+  # @register_torch_op
+  # def broadcast_to(context, node): return cml_ops.expand(context, node)
 
-  if "gelu" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["gelu"]
-  @register_torch_op
-  def gelu(context, node): context.add(mb.gelu(x=context[node.inputs[0]], name=node.name))
+  # if "gelu" in _TORCH_OPS_REGISTRY: del _TORCH_OPS_REGISTRY["gelu"]
+  # @register_torch_op
+  # def gelu(context, node): context.add(mb.gelu(x=context[node.inputs[0]], name=node.name))
 
   print("tracing")
   b = 1 if one_at_a_time or not cfg_enabled else 2
   latents_shape = (b, 4, 64, 64)
   timestep_shape = (1,)
   embeddings_shape = (b, 77, 768)
-  with no_grad(): # not sure whether no_grad is necessary but can't hurt
+  with no_grad(), torch.jit.optimized_execution(True): # not sure whether no_grad is necessary but can't hurt
     trace = torch.jit.trace(
       Undictifier(pt_model),
       (
-        torch.zeros(*latents_shape),
-        torch.zeros(*timestep_shape),
-        torch.zeros(*embeddings_shape)
+        torch.zeros(*latents_shape, device=device, dtype=torch_dtype),
+        torch.zeros(*timestep_shape, device=device, dtype=torch_dtype),
+        torch.zeros(*embeddings_shape, device=device, dtype=torch_dtype)
       ),
       strict=False,
       check_trace=False
@@ -363,15 +367,20 @@ def convert_unet(pt_model: UNet2DConditionModel, module_name: str) -> None:
   # + if isinstance(input_var.val, float):
   # +   return type_map[dtype_val](input_var.val)
   #   if not types.is_tensor(input_var.sym_type):
+  compute_units=ct.ComputeUnit.ALL if saving_coreml_ane else ct.ComputeUnit.CPU_AND_GPU
+  # dtype=ct.converters.mil.mil.types.fp16
+  dtype=np.float16
   cm_model = ct.convert(
-    trace, 
+    trace.eval(), 
     inputs=[
-      ct.TensorType(shape=latents_shape),
-      ct.TensorType(shape=timestep_shape),
-      ct.TensorType(shape=embeddings_shape)
+      ct.TensorType(shape=latents_shape, dtype=dtype),
+      ct.TensorType(shape=timestep_shape, dtype=dtype),
+      ct.TensorType(shape=embeddings_shape, dtype=dtype)
     ],
     convert_to="mlprogram",
     compute_precision=ct.precision.FLOAT16,
+    minimum_deployment_target=ct.target.macOS13,
+    compute_units=compute_units,
     skip_model_load=True
   )
 
@@ -466,7 +475,7 @@ def convert_sampler(pt_model: Sampler, module_name: str) -> None:
   torch.Tensor.argmin = orig_argmin
   torch.Tensor.expm1 = orig_expm1
 
-module_name = 'sampler' if coreml_sampler else 'unet_ane_optimized'
+module_name = 'sampler' if coreml_sampler else 'unet_ane_optimized_fp16'
 mlp_name: str = get_mlp_name(module_name)
 if saving_coreml_model:
   if Path(mlp_name).exists():

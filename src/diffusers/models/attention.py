@@ -648,10 +648,9 @@ class GEGLU(nn.Module):
         self.proj = nn.Linear(dim_in, dim_out * 2)
 
     def gelu(self, gate):
-        if gate.device.type != "mps":
-            return F.gelu(gate)
+        return F.gelu(gate)
         # mps: gelu is not implemented for float16
-        return F.gelu(gate.to(dtype=torch.float32)).to(dtype=gate.dtype)
+        # return F.gelu(gate.to(dtype=torch.float32)).to(dtype=gate.dtype)
 
     def forward(self, hidden_states):
         hidden_states, gate = self.proj(hidden_states).chunk(2, dim=-1)
