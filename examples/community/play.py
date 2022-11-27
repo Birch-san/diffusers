@@ -475,7 +475,7 @@ def convert_sampler(pt_model: Sampler, module_name: str) -> None:
   torch.Tensor.argmin = orig_argmin
   torch.Tensor.expm1 = orig_expm1
 
-module_name = 'sampler' if coreml_sampler else 'unet_ane_optimized_fp16'
+module_name = 'sampler' if coreml_sampler else 'unet_ane_optimized_fp16_2'
 mlp_name: str = get_mlp_name(module_name)
 if saving_coreml_model:
   if Path(mlp_name).exists():
