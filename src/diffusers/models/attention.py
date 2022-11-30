@@ -266,6 +266,8 @@ class AttentionBlock(nn.Module):
         rescale_output_factor (`float`, *optional*, defaults to 1.0): The factor to rescale the output by.
         eps (`float`, *optional*, defaults to 1e-5): The epsilon value to use for group norm.
     """
+    scale: float
+    fused_qk_scaling: bool
 
     def __init__(
         self,
@@ -289,6 +291,20 @@ class AttentionBlock(nn.Module):
 
         self.rescale_output_factor = rescale_output_factor
         self.proj_attn = nn.Linear(channels, channels, 1)
+
+        self.scale = 1 / math.sqrt(self.channels / self.num_heads)
+        self.fused_qk_scaling = False
+
+    def fuse_qk_scaling(self, spread_across_qk = False) -> None:
+        if self.fused_qk_scaling:
+            return
+        if spread_across_qk:
+            sqrt_scale = self.scale ** .5
+            self.query.weight.data *= sqrt_scale
+            self.key.weight.data *= sqrt_scale
+        else:
+            self.query.weight.data *= self.scale
+        self.fused_qk_scaling = True
 
     def reshape_heads_to_batch_dim(self, tensor):
         batch_size, seq_len, dim = tensor.shape
@@ -318,25 +334,26 @@ class AttentionBlock(nn.Module):
         key_proj = self.key(hidden_states)
         value_proj = self.value(hidden_states)
 
-        scale = 1 / math.sqrt(self.channels / self.num_heads)
-
         query_proj = self.reshape_heads_to_batch_dim(query_proj)
         key_proj = self.reshape_heads_to_batch_dim(key_proj)
         value_proj = self.reshape_heads_to_batch_dim(value_proj)
 
-        attention_scores = torch.baddbmm(
-            torch.empty(
-                query_proj.shape[0],
-                query_proj.shape[1],
-                key_proj.shape[1],
-                dtype=query_proj.dtype,
-                device=query_proj.device,
-            ),
-            query_proj,
-            key_proj.transpose(-1, -2),
-            beta=0,
-            alpha=scale,
-        )
+        if self.fused_qk_scaling:
+            attention_scores = torch.bmm(query_proj, key_proj.transpose(-1, -2))
+        else:
+            attention_scores = torch.baddbmm(
+                torch.empty(
+                    query_proj.shape[0],
+                    query_proj.shape[1],
+                    key_proj.shape[1],
+                    dtype=query_proj.dtype,
+                    device=query_proj.device,
+                ),
+                query_proj,
+                key_proj.transpose(-1, -2),
+                beta=0,
+                alpha=self.scale,
+            )
         attention_probs = torch.softmax(attention_scores.float(), dim=-1).type(attention_scores.dtype)
         hidden_states = torch.bmm(attention_probs, value_proj)
 
@@ -488,6 +505,8 @@ class CrossAttention(nn.Module):
         bias (`bool`, *optional*, defaults to False):
             Set to `True` for the query, key, and value linear layers to contain a bias parameter.
     """
+    scale: float
+    fused_qk_scaling: bool
 
     def __init__(
         self,
@@ -517,6 +536,19 @@ class CrossAttention(nn.Module):
         self.to_out = nn.ModuleList([])
         self.to_out.append(nn.Linear(inner_dim, query_dim))
         self.to_out.append(nn.Dropout(dropout))
+
+        self.fused_qk_scaling = False
+    
+    def fuse_qk_scaling(self, spread_across_qk = False) -> None:
+        if self.fused_qk_scaling:
+            return
+        if spread_across_qk:
+            sqrt_scale = self.scale ** .5
+            self.to_q.weight.data *= sqrt_scale
+            self.to_k.weight.data *= sqrt_scale
+        else:
+            self.to_q.weight.data *= self.scale
+        self.fused_qk_scaling = True
 
     def reshape_heads_to_batch_dim(self, tensor):
         batch_size, seq_len, dim = tensor.shape
@@ -566,13 +598,16 @@ class CrossAttention(nn.Module):
         return hidden_states
 
     def _attention(self, query, key, value):
-        attention_scores = torch.baddbmm(
-            torch.empty(query.shape[0], query.shape[1], key.shape[1], dtype=query.dtype, device=query.device),
-            query,
-            key.transpose(-1, -2),
-            beta=0,
-            alpha=self.scale,
-        )
+        if self.fused_qk_scaling:
+            attention_scores = torch.bmm(query, key.transpose(-1, -2))
+        else:
+            attention_scores = torch.baddbmm(
+                torch.empty(query.shape[0], query.shape[1], key.shape[1], dtype=query.dtype, device=query.device),
+                query,
+                key.transpose(-1, -2),
+                beta=0,
+                alpha=self.scale,
+            )
         attention_probs = attention_scores.softmax(dim=-1)
         # compute attention output
 
@@ -591,13 +626,16 @@ class CrossAttention(nn.Module):
         for i in range(hidden_states.shape[0] // slice_size):
             start_idx = i * slice_size
             end_idx = (i + 1) * slice_size
-            attn_slice = torch.baddbmm(
-                torch.empty(slice_size, query.shape[1], key.shape[1], dtype=query.dtype, device=query.device),
-                query[start_idx:end_idx],
-                key[start_idx:end_idx].transpose(-1, -2),
-                beta=0,
-                alpha=self.scale,
-            )
+            if self.fused_qk_scaling:
+                attn_slice = torch.bmm(query[start_idx:end_idx], key[start_idx:end_idx].transpose(-1, -2))
+            else:
+                attn_slice = torch.baddbmm(
+                    torch.empty(slice_size, query.shape[1], key.shape[1], dtype=query.dtype, device=query.device),
+                    query[start_idx:end_idx],
+                    key[start_idx:end_idx].transpose(-1, -2),
+                    beta=0,
+                    alpha=self.scale,
+                )
             attn_slice = attn_slice.softmax(dim=-1)
             attn_slice = torch.bmm(attn_slice, value[start_idx:end_idx])
 
