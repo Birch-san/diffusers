@@ -18,7 +18,8 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import nn, einsum
+from einops import rearrange
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..modeling_utils import ModelMixin
@@ -569,14 +570,21 @@ class CrossAttention(nn.Module):
 
         query = self.to_q(hidden_states)
         context = context if context is not None else hidden_states
-        key = self.to_k(context)
-        value = self.to_v(context)
+        head = 0
+        key = self.to_k(context)[:, :, (self.to_k.out_features // self.heads)*head:(self.to_k.out_features // self.heads)*(head+1)]
+        value = self.to_v(context)[:, :, (self.to_v.out_features // self.heads)*head:(self.to_v.out_features // self.heads)*(head+1)]
 
         dim = query.shape[-1]
 
-        query = self.reshape_heads_to_batch_dim(query)
-        key = self.reshape_heads_to_batch_dim(key)
-        value = self.reshape_heads_to_batch_dim(value)
+        # query = self.reshape_heads_to_batch_dim(query)
+        # query = rearrange(query, 'b n (h d) -> (b h) n d', h=self.heads)
+        # query = rearrange(query, 'b n (h d) -> b h n d', h=self.heads)
+        # key, value = map(lambda t: rearrange(t, 'b n d -> b n d'), (key, value))
+        key, value = map(lambda t: t.repeat(1, 1, self.heads), (key, value))
+        query, key, value = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=self.heads), (query, key, value))
+        # key, value = map(lambda t: rearrange(t.repeat(1, 1, self.heads), 'b n (h d) -> (b h) n d', h=self.heads), (key, value))
+        # key = self.reshape_heads_to_batch_dim(key)
+        # value = self.reshape_heads_to_batch_dim(value)
 
         # TODO(PVP) - mask is currently never used. Remember to re-implement when used
 
@@ -598,6 +606,8 @@ class CrossAttention(nn.Module):
         return hidden_states
 
     def _attention(self, query, key, value):
+        # attention_scores = einsum('b h n k, b m k -> b h n m', query, key) * self.scale
+        # attention_scores = rearrange(attention_scores, 'b h n m -> (b h) n m', h=self.heads)
         if self.fused_qk_scaling:
             attention_scores = torch.bmm(query, key.transpose(-1, -2))
         else:
@@ -612,6 +622,8 @@ class CrossAttention(nn.Module):
         # compute attention output
 
         hidden_states = torch.bmm(attention_probs, value)
+        # hidden_states = einsum('b h n m, b m v -> b h n v', attention_probs, value)
+        # hidden_states = rearrange(hidden_states, 'b h n v -> b n (h v)', h=self.heads)
 
         # reshape hidden_states
         hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
