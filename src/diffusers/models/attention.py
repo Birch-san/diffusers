@@ -17,7 +17,8 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import nn, Tensor
+from einops import rearrange, repeat
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..modeling_utils import ModelMixin
@@ -175,7 +176,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             self.norm_out = nn.LayerNorm(inner_dim)
             self.out = nn.Linear(inner_dim, self.num_vector_embeds - 1)
 
-    def forward(self, hidden_states, encoder_hidden_states=None, timestep=None, return_dict: bool = True):
+    def forward(self, hidden_states, encoder_hidden_states=None, timestep=None, return_dict: bool = True, cross_attn_mask: Optional[torch.Tensor] = None):
         """
         Args:
             hidden_states ( When discrete, `torch.LongTensor` of shape `(batch size, num latent pixels)`.
@@ -213,7 +214,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
 
         # 2. Blocks
         for block in self.transformer_blocks:
-            hidden_states = block(hidden_states, context=encoder_hidden_states, timestep=timestep)
+            hidden_states = block(hidden_states, context=encoder_hidden_states, timestep=timestep, cross_attn_mask=cross_attn_mask)
 
         # 3. Output
         if self.is_input_continuous:
@@ -472,14 +473,14 @@ class BasicTransformerBlock(nn.Module):
             self.attn1._use_memory_efficient_attention_xformers = use_memory_efficient_attention_xformers
             self.attn2._use_memory_efficient_attention_xformers = use_memory_efficient_attention_xformers
 
-    def forward(self, hidden_states, context=None, timestep=None):
+    def forward(self, hidden_states, context=None, timestep=None, cross_attn_mask: Optional[torch.Tensor] = None):
         # 1. Self-Attention
         norm_hidden_states = (
             self.norm1(hidden_states, timestep) if self.use_ada_layer_norm else self.norm1(hidden_states)
         )
 
         if self.only_cross_attention:
-            hidden_states = self.attn1(norm_hidden_states, context) + hidden_states
+            hidden_states = self.attn1(norm_hidden_states, context, cross_attn_mask=cross_attn_mask) + hidden_states
         else:
             hidden_states = self.attn1(norm_hidden_states) + hidden_states
 
@@ -488,7 +489,7 @@ class BasicTransformerBlock(nn.Module):
             norm_hidden_states = (
                 self.norm2(hidden_states, timestep) if self.use_ada_layer_norm else self.norm2(hidden_states)
             )
-            hidden_states = self.attn2(norm_hidden_states, context=context) + hidden_states
+            hidden_states = self.attn2(norm_hidden_states, context=context, cross_attn_mask=cross_attn_mask) + hidden_states
 
         # 3. Feed-forward
         hidden_states = self.ff(self.norm3(hidden_states)) + hidden_states
@@ -563,7 +564,7 @@ class CrossAttention(nn.Module):
 
         self._slice_size = slice_size
 
-    def forward(self, hidden_states, context=None, mask=None):
+    def forward(self, hidden_states, context=None, mask=None, cross_attn_mask:Optional[Tensor]=None):
         batch_size, sequence_length, _ = hidden_states.shape
 
         query = self.to_q(hidden_states)
@@ -577,18 +578,21 @@ class CrossAttention(nn.Module):
         key = self.reshape_heads_to_batch_dim(key)
         value = self.reshape_heads_to_batch_dim(value)
 
-        # TODO(PVP) - mask is currently never used. Remember to re-implement when used
+        # TODO AKB: `mask` param remains unimplemented. the parameter remains reserved
+        #   in case we should ever need a self-attention mask
+        #   (e.g. a pixel/latent-space mask to avoid self-attending to padding pixels, such as pillarboxing/letterboxing).
 
         # attention, what we cannot get enough of
         if self._use_memory_efficient_attention_xformers:
+            assert cross_attn_mask is None, "cross-attention masking not implemented for xformers attention"
             hidden_states = self._memory_efficient_attention_xformers(query, key, value)
             # Some versions of xformers return output in fp32, cast it back to the dtype of the input
             hidden_states = hidden_states.to(query.dtype)
         else:
             if self._slice_size is None or query.shape[0] // self._slice_size == 1:
-                hidden_states = self._attention(query, key, value)
+                hidden_states = self._attention(query, key, value, cross_attn_mask=cross_attn_mask)
             else:
-                hidden_states = self._sliced_attention(query, key, value, sequence_length, dim)
+                hidden_states = self._sliced_attention(query, key, value, sequence_length, dim, cross_attn_mask=cross_attn_mask)
 
         # linear proj
         hidden_states = self.to_out[0](hidden_states)
@@ -596,7 +600,7 @@ class CrossAttention(nn.Module):
         hidden_states = self.to_out[1](hidden_states)
         return hidden_states
 
-    def _attention(self, query, key, value):
+    def _attention(self, query, key, value, cross_attn_mask:Optional[Tensor]=None):
         if self.upcast_attention:
             query = query.float()
             key = key.float()
@@ -608,6 +612,12 @@ class CrossAttention(nn.Module):
             beta=0,
             alpha=self.scale,
         )
+        if cross_attn_mask is not None:
+            cross_attn_mask = rearrange(cross_attn_mask, 'b ... -> b (...)')
+            max_neg_value = -torch.finfo(attention_scores.dtype).max
+            cross_attn_mask = repeat(cross_attn_mask, 'b j -> (b h) () j', h=self.heads)
+            attention_scores.masked_fill_(~cross_attn_mask, max_neg_value)
+            del cross_attn_mask
         attention_probs = attention_scores.softmax(dim=-1)
 
         # cast back to the original dtype
@@ -620,11 +630,15 @@ class CrossAttention(nn.Module):
         hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
         return hidden_states
 
-    def _sliced_attention(self, query, key, value, sequence_length, dim):
+    def _sliced_attention(self, query, key, value, sequence_length, dim, cross_attn_mask:Optional[Tensor]=None):
         batch_size_attention = query.shape[0]
         hidden_states = torch.zeros(
             (batch_size_attention, sequence_length, dim // self.heads), device=query.device, dtype=query.dtype
         )
+        if cross_attn_mask is not None:
+            cross_attn_mask = rearrange(cross_attn_mask, 'b ... -> b (...)')
+            max_neg_value = -torch.finfo(query.dtype).max
+            cross_attn_mask = repeat(cross_attn_mask, 'b j -> (b h) () j', h=self.heads)
         slice_size = self._slice_size if self._slice_size is not None else hidden_states.shape[0]
         for i in range(hidden_states.shape[0] // slice_size):
             start_idx = i * slice_size
@@ -644,6 +658,10 @@ class CrossAttention(nn.Module):
                 beta=0,
                 alpha=self.scale,
             )
+            if cross_attn_mask is not None:
+                cross_attn_mask_slice = cross_attn_mask[start_idx:end_idx]
+                attn_slice.masked_fill_(~cross_attn_mask_slice, max_neg_value)
+                del cross_attn_mask_slice
             attn_slice = attn_slice.softmax(dim=-1)
 
             # cast back to the original dtype
