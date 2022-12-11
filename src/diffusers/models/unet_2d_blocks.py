@@ -13,7 +13,8 @@
 # limitations under the License.
 import numpy as np
 import torch
-from torch import nn
+from torch import nn, LongTensor
+from typing import Optional
 
 from .attention import AttentionBlock, DualTransformer2DModel, Transformer2DModel
 from .resnet import Downsample2D, FirDownsample2D, FirUpsample2D, ResnetBlock2D, Upsample2D
@@ -408,10 +409,10 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         self.attentions = nn.ModuleList(attentions)
         self.resnets = nn.ModuleList(resnets)
 
-    def forward(self, hidden_states, temb=None, encoder_hidden_states=None):
+    def forward(self, hidden_states, temb=None, encoder_hidden_states=None, np_arities: Optional[LongTensor]=None):
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
-            hidden_states = attn(hidden_states, encoder_hidden_states).sample
+            hidden_states = attn(hidden_states, encoder_hidden_states, np_arities=np_arities).sample
             hidden_states = resnet(hidden_states, temb)
 
         return hidden_states
@@ -588,7 +589,7 @@ class CrossAttnDownBlock2D(nn.Module):
 
         self.gradient_checkpointing = False
 
-    def forward(self, hidden_states, temb=None, encoder_hidden_states=None):
+    def forward(self, hidden_states, temb=None, encoder_hidden_states=None, np_arities: Optional[LongTensor]=None):
         output_states = ()
 
         for resnet, attn in zip(self.resnets, self.attentions):
@@ -609,7 +610,7 @@ class CrossAttnDownBlock2D(nn.Module):
                 )[0]
             else:
                 hidden_states = resnet(hidden_states, temb)
-                hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states).sample
+                hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states, np_arities=np_arities).sample
 
             output_states += (hidden_states,)
 
@@ -1176,6 +1177,7 @@ class CrossAttnUpBlock2D(nn.Module):
         temb=None,
         encoder_hidden_states=None,
         upsample_size=None,
+        np_arities: Optional[LongTensor]=None,
     ):
         for resnet, attn in zip(self.resnets, self.attentions):
             # pop res hidden states
@@ -1196,11 +1198,11 @@ class CrossAttnUpBlock2D(nn.Module):
 
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, temb)
                 hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states
+                    create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states, np_arities=np_arities,
                 )[0]
             else:
                 hidden_states = resnet(hidden_states, temb)
-                hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states).sample
+                hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states, np_arities=np_arities).sample
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:

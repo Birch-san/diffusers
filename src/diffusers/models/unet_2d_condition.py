@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
+from torch import LongTensor
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..modeling_utils import ModelMixin
@@ -308,6 +309,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         encoder_hidden_states: torch.Tensor,
         class_labels: Optional[torch.Tensor] = None,
         return_dict: bool = True,
+        np_arities: Optional[LongTensor] = None,
     ) -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         Args:
@@ -382,6 +384,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
                     hidden_states=sample,
                     temb=emb,
                     encoder_hidden_states=encoder_hidden_states,
+                    np_arities=np_arities,
                 )
             else:
                 sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
@@ -410,6 +413,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
                     res_hidden_states_tuple=res_samples,
                     encoder_hidden_states=encoder_hidden_states,
                     upsample_size=upsample_size,
+                    np_arities=np_arities,
                 )
             else:
                 sample = upsample_block(

@@ -17,7 +17,8 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import nn, Tensor, LongTensor, tensor
+from typing import Optional, List
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..modeling_utils import ModelMixin
@@ -175,7 +176,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             self.norm_out = nn.LayerNorm(inner_dim)
             self.out = nn.Linear(inner_dim, self.num_vector_embeds - 1)
 
-    def forward(self, hidden_states, encoder_hidden_states=None, timestep=None, return_dict: bool = True):
+    def forward(self, hidden_states, encoder_hidden_states=None, timestep=None, return_dict: bool = True, np_arities: Optional[LongTensor]=None):
         """
         Args:
             hidden_states ( When discrete, `torch.LongTensor` of shape `(batch size, num latent pixels)`.
@@ -213,7 +214,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
 
         # 2. Blocks
         for block in self.transformer_blocks:
-            hidden_states = block(hidden_states, context=encoder_hidden_states, timestep=timestep)
+            hidden_states = block(hidden_states, context=encoder_hidden_states, timestep=timestep, np_arities=np_arities)
 
         # 3. Output
         if self.is_input_continuous:
@@ -472,14 +473,14 @@ class BasicTransformerBlock(nn.Module):
             self.attn1._use_memory_efficient_attention_xformers = use_memory_efficient_attention_xformers
             self.attn2._use_memory_efficient_attention_xformers = use_memory_efficient_attention_xformers
 
-    def forward(self, hidden_states, context=None, timestep=None):
+    def forward(self, hidden_states, context=None, timestep=None, np_arities: Optional[LongTensor]=None):
         # 1. Self-Attention
         norm_hidden_states = (
             self.norm1(hidden_states, timestep) if self.use_ada_layer_norm else self.norm1(hidden_states)
         )
 
         if self.only_cross_attention:
-            hidden_states = self.attn1(norm_hidden_states, context) + hidden_states
+            hidden_states = self.attn1(norm_hidden_states, context, np_arities=np_arities) + hidden_states
         else:
             hidden_states = self.attn1(norm_hidden_states) + hidden_states
 
@@ -488,7 +489,7 @@ class BasicTransformerBlock(nn.Module):
             norm_hidden_states = (
                 self.norm2(hidden_states, timestep) if self.use_ada_layer_norm else self.norm2(hidden_states)
             )
-            hidden_states = self.attn2(norm_hidden_states, context=context) + hidden_states
+            hidden_states = self.attn2(norm_hidden_states, context=context, np_arities=np_arities) + hidden_states
 
         # 3. Feed-forward
         hidden_states = self.ff(self.norm3(hidden_states)) + hidden_states
@@ -563,7 +564,15 @@ class CrossAttention(nn.Module):
 
         self._slice_size = slice_size
 
-    def forward(self, hidden_states, context=None, mask=None):
+    def forward(self, hidden_states, context=None, mask=None, np_arities: Optional[LongTensor]=None):
+        if np_arities is not None:
+            assert self._use_memory_efficient_attention_xformers is False, "structured diffusion not implemented for xformers"
+            assert self._slice_size is None, "structured diffusion not implemented for sliced attention"
+            return self._structured_attn(
+                hidden_states=hidden_states,
+                context=context,
+                np_arities=np_arities,
+            )
         batch_size, sequence_length, _ = hidden_states.shape
 
         query = self.to_q(hidden_states)
@@ -594,6 +603,34 @@ class CrossAttention(nn.Module):
         hidden_states = self.to_out[0](hidden_states)
         # dropout
         hidden_states = self.to_out[1](hidden_states)
+        return hidden_states
+    
+    def _structured_attn(self, hidden_states: Tensor, context: Tensor, np_arities: LongTensor) -> Tensor:
+        # np_arities tells us how many noun-phrases each condition has.
+        # the layout is:
+        # uncond
+        # cond0
+        # cond0_np0
+        # ...
+        # cond0_np[final]
+        # ...
+        # cond[final]_np0
+        # ...
+        # cond[final]_np[final]
+        structured_prompts_submitted = np_arities.size(0)
+        assert structured_prompts_submitted == 1, "structured attention only implemented for batch-of-1 for now"
+        # number of conditions we expect to receive:
+        # 1 uncond +
+        # (per structured prompt):
+        #   1 cond for the nominal prompt +
+        #   (per noun-phrase belonging to that prompt):
+        #     1 cond
+        # so a batch-of-1 structured prompt with two noun-phrases would be:
+        # 1 uncond + 1 nominal prompt + 2 noun-phrases = 4
+        conditions_expected = np_arities.sum().item() + structured_prompts_submitted + 1
+        conditions_submitted = context.size(0)
+        assert conditions_submitted == conditions_expected, "Expected {conditions_expected} to be submitted. Got {conditions_submitted}. Note: omitting uncond or computing it separately are unsupported."
+        # TODO: everything else
         return hidden_states
 
     def _attention(self, query, key, value):
