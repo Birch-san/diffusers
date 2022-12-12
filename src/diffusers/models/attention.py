@@ -641,7 +641,6 @@ class CrossAttention(nn.Module):
         cond_count = conditions_submitted-uncond_count
         query_uc, query_c = query.split((uncond_count*self.heads, structured_prompts_submitted*self.heads))
         key_uc, key_c = key.split((uncond_count*self.heads, cond_count*self.heads))
-        value_uc, value_c = value.split((uncond_count*self.heads, cond_count*self.heads))
         attention_scores_uc = torch.baddbmm(
             torch.empty(query_uc.shape[0], query_uc.shape[1], key_uc.shape[1], dtype=query_uc.dtype, device=query_uc.device),
             query_uc,
@@ -658,14 +657,12 @@ class CrossAttention(nn.Module):
             beta=0,
             alpha=self.scale,
         )
-        attention_probs_uc = attention_scores_uc.softmax(dim=-1).to(value.dtype)
-        # attention_probs_c = [cond_scores.softmax(dim=-1).to(value.dtype) for cond_scores in attention_scores_c]
-        attention_probs_c = attention_scores_c.softmax(dim=-1).to(value.dtype)
+        attention_scores = torch.cat([attention_scores_uc, attention_scores_c])
+        attention_probs = attention_scores.softmax(dim=-1).to(value.dtype)
+        hidden_states = torch.bmm(attention_probs, value)
 
-        hidden_states_uc = torch.bmm(attention_probs_uc, value_uc)
-        # hidden_states_c = sum(torch.bmm(attention_probs_c, value_c)) / cond_count
-        # hidden_states_c = torch.sum(torch.bmm(attention_probs_c, value_c), dim=0) / cond_count
-        hidden_states_c = torch.bmm(attention_probs_c, value_c)
+        # division-by-cond_count could be fused into the bmm above, if we split into "bmm for uc" and "baddbmm for c". probably slower.
+        hidden_states_uc, hidden_states_c = hidden_states.split((uncond_count*self.heads, cond_count*self.heads))
         hidden_states_c = torch.sum(rearrange(hidden_states_c, '(b h) t c -> b h t c', h=self.heads), dim=0) / cond_count
 
         hidden_states = torch.cat([hidden_states_uc, hidden_states_c])
