@@ -392,7 +392,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
             down_block_res_samples += res_samples
 
         # 4. mid
-        sample = self.mid_block(sample, emb, encoder_hidden_states=encoder_hidden_states)
+        sample = self.mid_block(sample, emb, encoder_hidden_states=encoder_hidden_states, np_arities=np_arities)
 
         # 5. up
         for i, upsample_block in enumerate(self.up_blocks):

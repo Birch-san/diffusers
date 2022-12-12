@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor, LongTensor, tensor
 from typing import Optional, List
+from einops import rearrange
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..modeling_utils import ModelMixin
@@ -565,14 +566,6 @@ class CrossAttention(nn.Module):
         self._slice_size = slice_size
 
     def forward(self, hidden_states, context=None, mask=None, np_arities: Optional[LongTensor]=None):
-        if np_arities is not None:
-            assert self._use_memory_efficient_attention_xformers is False, "structured diffusion not implemented for xformers"
-            assert self._slice_size is None, "structured diffusion not implemented for sliced attention"
-            return self._structured_attn(
-                hidden_states=hidden_states,
-                context=context,
-                np_arities=np_arities,
-            )
         batch_size, sequence_length, _ = hidden_states.shape
 
         query = self.to_q(hidden_states)
@@ -589,7 +582,16 @@ class CrossAttention(nn.Module):
         # TODO(PVP) - mask is currently never used. Remember to re-implement when used
 
         # attention, what we cannot get enough of
-        if self._use_memory_efficient_attention_xformers:
+        if np_arities is not None:
+            assert self._use_memory_efficient_attention_xformers is False, "structured diffusion not implemented for xformers"
+            assert self._slice_size is None, "structured diffusion not implemented for sliced attention"
+            hidden_states = self._structured_attn(
+                query=query,
+                key=key,
+                value=value,
+                np_arities=np_arities,
+            )
+        elif self._use_memory_efficient_attention_xformers:
             hidden_states = self._memory_efficient_attention_xformers(query, key, value)
             # Some versions of xformers return output in fp32, cast it back to the dtype of the input
             hidden_states = hidden_states.to(query.dtype)
@@ -605,10 +607,15 @@ class CrossAttention(nn.Module):
         hidden_states = self.to_out[1](hidden_states)
         return hidden_states
     
-    def _structured_attn(self, hidden_states: Tensor, context: Tensor, np_arities: LongTensor) -> Tensor:
+    def _structured_attn(self, query: Tensor, key: Tensor, value: Tensor, np_arities: LongTensor) -> Tensor:
+        if self.upcast_attention:
+            query = query.float()
+            key = key.float()
         # np_arities tells us how many noun-phrases each condition has.
         # the layout is:
-        # uncond
+        # uncond0
+        # ...
+        # uncond[final] # note: for now we assume just 1 uncond (i.e. batch-of-1 generation)
         # cond0
         # cond0_np0
         # ...
@@ -628,9 +635,42 @@ class CrossAttention(nn.Module):
         # so a batch-of-1 structured prompt with two noun-phrases would be:
         # 1 uncond + 1 nominal prompt + 2 noun-phrases = 4
         conditions_expected = np_arities.sum().item() + structured_prompts_submitted + 1
-        conditions_submitted = context.size(0)
-        assert conditions_submitted == conditions_expected, "Expected {conditions_expected} to be submitted. Got {conditions_submitted}. Note: omitting uncond or computing it separately are unsupported."
-        # TODO: everything else
+        conditions_submitted = key.size(0) // self.heads
+        assert conditions_submitted == conditions_expected, f"Expected {conditions_expected} to be submitted. Got {conditions_submitted}. Note: we do not currently support omitting uncond, or submitting multiple unconds (e.g. batch-of-many)"
+        uncond_count = 1
+        cond_count = conditions_submitted-uncond_count
+        query_uc, query_c = query.split((uncond_count*self.heads, structured_prompts_submitted*self.heads))
+        key_uc, key_c = key.split((uncond_count*self.heads, cond_count*self.heads))
+        value_uc, value_c = value.split((uncond_count*self.heads, cond_count*self.heads))
+        attention_scores_uc = torch.baddbmm(
+            torch.empty(query_uc.shape[0], query_uc.shape[1], key_uc.shape[1], dtype=query_uc.dtype, device=query_uc.device),
+            query_uc,
+            key_uc.transpose(-1, -2),
+            beta=0,
+            alpha=self.scale,
+        )
+        # TODO: would it be cheaper to use einsum (to avoid this repeat, which probably performs a copy)?
+        query_c_repeated = query_c.repeat(cond_count, 1, 1)
+        attention_scores_c = torch.baddbmm(
+            torch.empty(query_c_repeated.shape[0], query_c_repeated.shape[1], key_c.shape[1], dtype=query_c_repeated.dtype, device=query_c_repeated.device),
+            query_c_repeated,
+            key_c.transpose(-1, -2),
+            beta=0,
+            alpha=self.scale,
+        )
+        attention_probs_uc = attention_scores_uc.softmax(dim=-1).to(value.dtype)
+        # attention_probs_c = [cond_scores.softmax(dim=-1).to(value.dtype) for cond_scores in attention_scores_c]
+        attention_probs_c = attention_scores_c.softmax(dim=-1).to(value.dtype)
+
+        hidden_states_uc = torch.bmm(attention_probs_uc, value_uc)
+        # hidden_states_c = sum(torch.bmm(attention_probs_c, value_c)) / cond_count
+        # hidden_states_c = torch.sum(torch.bmm(attention_probs_c, value_c), dim=0) / cond_count
+        hidden_states_c = torch.bmm(attention_probs_c, value_c)
+        hidden_states_c = torch.sum(rearrange(hidden_states_c, '(b h) t c -> b h t c', h=self.heads), dim=0) / cond_count
+
+        hidden_states = torch.cat([hidden_states_uc, hidden_states_c])
+
+        hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
         return hidden_states
 
     def _attention(self, query, key, value):
