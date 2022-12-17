@@ -574,7 +574,7 @@ class CrossAttention(nn.Module):
         dim = query.shape[-1]
 
         query = self.reshape_heads_to_batch_dim(query)
-        key = self.reshape_heads_to_batch_dim(key)
+        key = key.unflatten(2, (self.heads, -1)).permute(0, 2, 3, 1).flatten(end_dim=1)
         value = self.reshape_heads_to_batch_dim(value)
 
         # TODO(PVP) - mask is currently never used. Remember to re-implement when used
@@ -602,9 +602,9 @@ class CrossAttention(nn.Module):
             key = key.float()
 
         attention_scores = torch.baddbmm(
-            torch.empty(query.shape[0], query.shape[1], key.shape[1], dtype=query.dtype, device=query.device),
+            torch.empty(query.shape[0], query.shape[1], key.shape[2], dtype=query.dtype, device=query.device),
             query,
-            key.transpose(-1, -2),
+            key,
             beta=0,
             alpha=self.scale,
         )
@@ -638,9 +638,9 @@ class CrossAttention(nn.Module):
                 key_slice = key_slice.float()
 
             attn_slice = torch.baddbmm(
-                torch.empty(slice_size, query.shape[1], key.shape[1], dtype=query_slice.dtype, device=query.device),
+                torch.empty(slice_size, query.shape[1], key.shape[2], dtype=query_slice.dtype, device=query.device),
                 query_slice,
-                key_slice.transpose(-1, -2),
+                key_slice,
                 beta=0,
                 alpha=self.scale,
             )
