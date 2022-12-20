@@ -625,7 +625,7 @@ class CrossAttention(nn.Module):
         if attention_mask is not None:
             if attention_mask.shape[-1] != query.shape[1]:
                 target_length = query.shape[1]
-                attention_mask = F.pad(attention_mask, (0, target_length), value=0.0)
+                attention_mask = F.pad(attention_mask.cpu(), (0, target_length), value=0.0).to(attention_mask.device)
                 attention_mask = attention_mask.repeat_interleave(self.heads, dim=0)
 
         # attention, what we cannot get enough of
