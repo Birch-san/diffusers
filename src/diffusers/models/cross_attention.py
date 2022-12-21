@@ -206,7 +206,7 @@ class CrossAttention(nn.Module):
             return attention_mask
 
         if attention_mask.shape[-1] != target_length:
-            attention_mask = F.pad(attention_mask, (0, target_length), value=0.0)
+            attention_mask = F.pad(attention_mask.cpu() if attention_mask.device.type == 'mps' else attention_mask, (0, target_length), value=0.0).to(attention_mask.device)
             attention_mask = attention_mask.repeat_interleave(head_size, dim=0)
         return attention_mask
 
