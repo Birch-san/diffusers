@@ -472,6 +472,10 @@ class BasicTransformerBlock(nn.Module):
         attention_mask=None,
         cross_attention_kwargs=None,
     ):
+        if torch.__version__ == '1.12.1' and hidden_states.device.type == 'mps':
+            # prevents the following error from PyTorch 1.12.1's MPS backend:
+            #   RuntimeError: view size is not compatible with input tensor's size and stride (at least one dimension spans across two contiguous subspaces). Use .reshape(...) instead.
+            hidden_states = hidden_states.contiguous()
         # 1. Self-Attention
         norm_hidden_states = (
             self.norm1(hidden_states, timestep) if self.use_ada_layer_norm else self.norm1(hidden_states)
