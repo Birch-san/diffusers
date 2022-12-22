@@ -15,7 +15,8 @@ from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import nn, Tensor
+import gc
 
 from ..utils.import_utils import is_xformers_available
 
@@ -28,6 +29,10 @@ else:
 
 
 class CrossAttention(nn.Module):
+    is_self_attention: bool
+    fused_qkv_proj: bool
+    in_proj_weight: Optional[Tensor]
+    kv_proj_weight: Optional[Tensor]
     r"""
     A cross attention layer.
 
@@ -58,6 +63,10 @@ class CrossAttention(nn.Module):
     ):
         super().__init__()
         inner_dim = dim_head * heads
+        self.is_self_attention = cross_attention_dim is None
+        self.fused_qkv_proj = False
+        self.in_proj_weight = None
+        self.kv_proj_weight = None
         cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
         self.upcast_attention = upcast_attention
         self.upcast_softmax = upcast_softmax
@@ -92,6 +101,22 @@ class CrossAttention(nn.Module):
         # set attention processor
         processor = processor if processor is not None else CrossAttnProcessor()
         self.set_processor(processor)
+    
+    def fuse_qkv_proj(self) -> None:
+        # it's possible to support bias, but since stable-diffusion doesn't use it: I have no way to test it
+        assert self.to_q.bias is None
+        assert self.to_k.bias is None
+        assert self.to_v.bias is None
+        assert self.fused_qkv_proj is False
+        if self.is_self_attention:
+            self.in_proj_weight = torch.cat([self.to_q.weight, self.to_k.weight, self.to_v.weight])
+            del self.to_q
+        else:
+            self.kv_proj_weight = torch.cat([self.to_k.weight, self.to_v.weight])
+        del self.to_k, self.to_v
+        gc.collect()
+
+        self.fused_qkv_proj = True
 
     def set_use_memory_efficient_attention_xformers(self, use_memory_efficient_attention_xformers: bool):
         if use_memory_efficient_attention_xformers:
@@ -216,12 +241,19 @@ class CrossAttnProcessor:
         batch_size, sequence_length, _ = hidden_states.shape
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length)
 
-        query = attn.to_q(hidden_states)
+        if attn.fused_qkv_proj:
+            if attn.is_self_attention:
+                query, key, value = F.linear(hidden_states, attn.in_proj_weight).chunk(3, dim=-1)
+            else:
+                # encoder-decoder attention
+                query = attn.to_q(hidden_states)
+                key, value = F.linear(encoder_hidden_states, attn.kv_proj_weight).chunk(2, dim=-1)
+        else:
+            encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
+            query = attn.to_q(hidden_states)
+            key = attn.to_k(encoder_hidden_states)
+            value = attn.to_v(encoder_hidden_states)
         query = attn.head_to_batch_dim(query)
-
-        encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
-        key = attn.to_k(encoder_hidden_states)
-        value = attn.to_v(encoder_hidden_states)
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
