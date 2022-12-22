@@ -109,10 +109,10 @@ class CrossAttention(nn.Module):
         assert self.to_v.bias is None
         assert self.fused_qkv_proj is False
         if self.is_self_attention:
-            self.in_proj_weight_t = torch.cat([self.to_q.weight, self.to_k.weight, self.to_v.weight]).T.unsqueeze(0).contiguous().detach()
+            self.in_proj_weight_t = torch.cat([self.to_q.weight, self.to_k.weight, self.to_v.weight]).T.contiguous().detach()
             del self.to_q
         else:
-            self.kv_proj_weight_t = torch.cat([self.to_k.weight, self.to_v.weight]).T.unsqueeze(0).contiguous().detach()
+            self.kv_proj_weight_t = torch.cat([self.to_k.weight, self.to_v.weight]).T.contiguous().detach()
         del self.to_k, self.to_v
         gc.collect()
 
@@ -243,11 +243,11 @@ class CrossAttnProcessor:
 
         if attn.fused_qkv_proj:
             if attn.is_self_attention:
-                query, key, value = torch.bmm(hidden_states, attn.in_proj_weight_t.expand(hidden_states.shape[0], -1, -1)).chunk(3, dim=-1)
+                query, key, value = torch.matmul(hidden_states, attn.in_proj_weight_t).chunk(3, dim=-1)
             else:
                 # encoder-decoder attention
                 query = attn.to_q(hidden_states)
-                key, value = torch.bmm(encoder_hidden_states, attn.kv_proj_weight_t.expand(encoder_hidden_states.shape[0], -1, -1)).chunk(2, dim=-1)
+                key, value = torch.matmul(encoder_hidden_states, attn.kv_proj_weight_t).chunk(2, dim=-1)
         else:
             encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
             query = attn.to_q(hidden_states)
