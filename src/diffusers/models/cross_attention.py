@@ -243,19 +243,24 @@ class CrossAttnProcessor:
 
         if attn.fused_qkv_proj:
             if attn.is_self_attention:
-                query, key, value = torch.matmul(hidden_states, attn.in_proj_weight_t).chunk(3, dim=-1)
+                qkv = torch.matmul(hidden_states, attn.in_proj_weight_t)
+                query, key, value = qkv.unflatten(2, (3, attn.heads, -1)).permute(2,0,3,1,4).flatten(start_dim=1, end_dim=2)
+                del qkv
             else:
                 # encoder-decoder attention
                 query = attn.to_q(hidden_states)
-                key, value = torch.matmul(encoder_hidden_states, attn.kv_proj_weight_t).chunk(2, dim=-1)
+                query = query.unflatten(2, (attn.heads, -1)).transpose(1,2).flatten(end_dim=1)
+                kv = torch.matmul(encoder_hidden_states, attn.kv_proj_weight_t)
+                key, value = kv.unflatten(2, (2, attn.heads, -1)).permute(2,0,3,1,4).flatten(start_dim=1, end_dim=2)
+                del kv
         else:
             encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
             query = attn.to_q(hidden_states)
             key = attn.to_k(encoder_hidden_states)
             value = attn.to_v(encoder_hidden_states)
-        query = attn.head_to_batch_dim(query)
-        key = attn.head_to_batch_dim(key)
-        value = attn.head_to_batch_dim(value)
+            query = query.unflatten(2, (attn.heads, -1)).transpose(1,2).flatten(end_dim=1)
+            key = key.unflatten(2, (attn.heads, -1)).transpose(1,2).flatten(end_dim=1)
+            value = value.unflatten(2, (attn.heads, -1)).transpose(1,2).flatten(end_dim=1)
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
         hidden_states = torch.bmm(attention_probs, value)
