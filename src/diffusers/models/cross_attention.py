@@ -243,24 +243,19 @@ class CrossAttnProcessor:
 
         if attn.fused_qkv_proj:
             if attn.is_self_attention:
-                qkv = torch.matmul(hidden_states, attn.in_proj_weight_t)
-                query, key, value = qkv.unflatten(2, (3*attn.heads, -1)).transpose(1,2).unflatten(1, (3, -1)).transpose(0,1).flatten(start_dim=1, end_dim=2)
-                del qkv
+                query, key, value = torch.matmul(hidden_states, attn.in_proj_weight_t).chunk(3, dim=-1)
             else:
                 # encoder-decoder attention
                 query = attn.to_q(hidden_states)
-                query = query.unflatten(2, (attn.heads, -1)).transpose(1,2).flatten(end_dim=1)
-                kv = torch.matmul(encoder_hidden_states, attn.kv_proj_weight_t)
-                key, value = kv.unflatten(2, (2*attn.heads, -1)).transpose(1,2).unflatten(1, (2, -1)).transpose(0,1).flatten(start_dim=1, end_dim=2)
-                del kv
+                key, value = torch.matmul(encoder_hidden_states, attn.kv_proj_weight_t).chunk(2, dim=-1)
         else:
             encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
             query = attn.to_q(hidden_states)
             key = attn.to_k(encoder_hidden_states)
             value = attn.to_v(encoder_hidden_states)
-            query = query.unflatten(2, (attn.heads, -1)).transpose(1,2).flatten(end_dim=1)
-            key = key.unflatten(2, (attn.heads, -1)).transpose(1,2).flatten(end_dim=1)
-            value = value.unflatten(2, (attn.heads, -1)).transpose(1,2).flatten(end_dim=1)
+        query = query.contiguous().view(query.shape[1], query.shape[0] * attn.heads, -1).transpose(0, 1)
+        key = key.contiguous().view(key.shape[1], key.shape[0] * attn.heads, -1).transpose(0, 1)
+        value = value.contiguous().view(value.shape[1], value.shape[0] * attn.heads, -1).transpose(0, 1)
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
         hidden_states = torch.bmm(attention_probs, value)
