@@ -31,8 +31,8 @@ else:
 class CrossAttention(nn.Module):
     is_self_attention: bool
     fused_qkv_proj: bool
-    in_proj_weight: Optional[Tensor]
-    kv_proj_weight: Optional[Tensor]
+    in_proj_weight_t: Optional[Tensor]
+    kv_proj_weight_t: Optional[Tensor]
     r"""
     A cross attention layer.
 
@@ -65,8 +65,8 @@ class CrossAttention(nn.Module):
         inner_dim = dim_head * heads
         self.is_self_attention = cross_attention_dim is None
         self.fused_qkv_proj = False
-        self.in_proj_weight = None
-        self.kv_proj_weight = None
+        self.in_proj_weight_t = None
+        self.kv_proj_weight_t = None
         cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
         self.upcast_attention = upcast_attention
         self.upcast_softmax = upcast_softmax
@@ -109,10 +109,10 @@ class CrossAttention(nn.Module):
         assert self.to_v.bias is None
         assert self.fused_qkv_proj is False
         if self.is_self_attention:
-            self.in_proj_weight = torch.cat([self.to_q.weight, self.to_k.weight, self.to_v.weight])
+            self.in_proj_weight_t = torch.cat([self.to_q.weight, self.to_k.weight, self.to_v.weight]).T.unsqueeze(0).contiguous().detach()
             del self.to_q
         else:
-            self.kv_proj_weight = torch.cat([self.to_k.weight, self.to_v.weight])
+            self.kv_proj_weight_t = torch.cat([self.to_k.weight, self.to_v.weight]).T.unsqueeze(0).contiguous().detach()
         del self.to_k, self.to_v
         gc.collect()
 
@@ -243,11 +243,11 @@ class CrossAttnProcessor:
 
         if attn.fused_qkv_proj:
             if attn.is_self_attention:
-                query, key, value = F.linear(hidden_states, attn.in_proj_weight).chunk(3, dim=-1)
+                query, key, value = torch.bmm(hidden_states, attn.in_proj_weight_t.expand(hidden_states.shape[0], -1, -1)).chunk(3, dim=-1)
             else:
                 # encoder-decoder attention
                 query = attn.to_q(hidden_states)
-                key, value = F.linear(encoder_hidden_states, attn.kv_proj_weight).chunk(2, dim=-1)
+                key, value = torch.bmm(encoder_hidden_states, attn.kv_proj_weight_t.expand(encoder_hidden_states.shape[0], -1, -1)).chunk(2, dim=-1)
         else:
             encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
             query = attn.to_q(hidden_states)
