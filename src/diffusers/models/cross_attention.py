@@ -256,7 +256,6 @@ class CrossAttnProcessor:
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
         if is_xattn:
-            assert attn.heads == 8
             heads_retained = attn.heads-1
             value = torch.cat([
                 value[0:batch_size*heads_retained],
