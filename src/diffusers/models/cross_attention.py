@@ -249,11 +249,19 @@ class CrossAttnProcessor:
         query = attn.to_q(hidden_states)
         query = attn.head_to_batch_dim(query)
 
+        is_xattn = encoder_hidden_states is not None
         encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
+        if is_xattn:
+            assert attn.heads == 8
+            heads_retained = attn.heads-1
+            value = torch.cat([
+                value[0:batch_size*heads_retained],
+                value[batch_size*(heads_retained-1):batch_size*heads_retained],
+            ])
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
         hidden_states = torch.bmm(attention_probs, value)
