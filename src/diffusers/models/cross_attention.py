@@ -249,11 +249,20 @@ class CrossAttnProcessor:
         query = attn.to_q(hidden_states)
         query = attn.head_to_batch_dim(query)
 
+        is_xattn = encoder_hidden_states is not None
         encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
+        if is_xattn:
+            # split the value tensor into 5 chunks (one per attention head), each with 64 channels
+            # note: I hardcoded 5 because I think some blocks are misconfigured (specified 10, which
+            # resulted in mismatched tensor shapes)
+            value_heads = value.chunk(5, dim=0)
+            # retain most value heads, but discard the final head and instead duplicate the penultimate head
+            # this is just to verify whether "it doesn't matter what we use here; it's being ignored"
+            value = torch.cat([value_heads[0], value_heads[1], value_heads[2], value_heads[3], value_heads[3]])
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
         hidden_states = torch.bmm(attention_probs, value)
