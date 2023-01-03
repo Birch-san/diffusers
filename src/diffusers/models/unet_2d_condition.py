@@ -386,7 +386,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
             forward_upsample_size = True
 
         if cross_attn_mask is not None:
-            cross_attn_mask = (1 - cross_attn_mask.to(sample.dtype)) * -torch.finfo(sample.dtype).max
+            cross_attn_mask = (1 - cross_attn_mask.to(sample.dtype)) * -10000.0
 
         # prepare attention_mask
         if attention_mask is not None:
