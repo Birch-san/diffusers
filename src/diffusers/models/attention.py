@@ -181,6 +181,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         hidden_states,
         encoder_hidden_states=None,
         timestep=None,
+        cross_attn_mask: Optional[torch.Tensor] = None,
         cross_attention_kwargs=None,
         return_dict: bool = True,
     ):
@@ -225,6 +226,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                 hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 timestep=timestep,
+                cross_attn_mask=cross_attn_mask,
                 cross_attention_kwargs=cross_attention_kwargs,
             )
 
@@ -466,6 +468,7 @@ class BasicTransformerBlock(nn.Module):
         encoder_hidden_states=None,
         timestep=None,
         attention_mask=None,
+        cross_attn_mask: Optional[torch.Tensor] = None,
         cross_attention_kwargs=None,
     ):
         # 1. Self-Attention
@@ -477,6 +480,7 @@ class BasicTransformerBlock(nn.Module):
             norm_hidden_states,
             encoder_hidden_states=encoder_hidden_states if self.only_cross_attention else None,
             attention_mask=attention_mask,
+            cross_attn_mask=cross_attn_mask if self.only_cross_attention else None,
             **cross_attention_kwargs,
         )
         hidden_states = attn_output + hidden_states
@@ -490,6 +494,7 @@ class BasicTransformerBlock(nn.Module):
                 norm_hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
+                cross_attn_mask=cross_attn_mask,
                 **cross_attention_kwargs,
             )
             hidden_states = attn_output + hidden_states

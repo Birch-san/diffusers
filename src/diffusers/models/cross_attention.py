@@ -173,7 +173,7 @@ class CrossAttention(nn.Module):
     def set_processor(self, processor: "AttnProcessor"):
         self.processor = processor
 
-    def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None, **cross_attention_kwargs):
+    def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None, cross_attn_mask: Optional[torch.Tensor] = None, **cross_attention_kwargs):
         # The `CrossAttention` class can call different attention processors / attention functions
         # here we simply pass along all tensors to the selected processor class
         # For standard processors that are defined here, `**cross_attention_kwargs` is empty
@@ -182,6 +182,7 @@ class CrossAttention(nn.Module):
             hidden_states,
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
+            cross_attn_mask=cross_attn_mask,
             **cross_attention_kwargs,
         )
 
@@ -199,11 +200,20 @@ class CrossAttention(nn.Module):
         tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size * head_size, seq_len, dim // head_size)
         return tensor
 
-    def get_attention_scores(self, query, key, attention_mask=None):
+    def get_attention_scores(self, query, key, attention_mask=None, cross_attn_mask: Optional[torch.Tensor] = None):
         dtype = query.dtype
         if self.upcast_attention:
             query = query.float()
             key = key.float()
+        
+        # haven't defined what to do if both are present
+        if attention_mask is not None:
+            assert cross_attn_mask is None
+        if cross_attn_mask is not None:
+            assert attention_mask is None
+            device = cross_attn_mask.device
+            cross_attn_mask = cross_attn_mask.to('cpu' if device.type == 'mps' else device).repeat_interleave(self.heads, dim=0).to(device).unsqueeze(1)
+            attention_mask = cross_attn_mask
 
         beta = 0 if attention_mask is None else 1
         add = torch.empty(
@@ -242,7 +252,7 @@ class CrossAttention(nn.Module):
 
 
 class CrossAttnProcessor:
-    def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
+    def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None, cross_attn_mask: Optional[torch.Tensor] = None):
         batch_size, sequence_length, _ = hidden_states.shape
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length)
 
@@ -255,7 +265,7 @@ class CrossAttnProcessor:
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
-        attention_probs = attn.get_attention_scores(query, key, attention_mask)
+        attention_probs = attn.get_attention_scores(query, key, attention_mask, cross_attn_mask=cross_attn_mask)
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
 

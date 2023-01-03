@@ -354,6 +354,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         encoder_hidden_states: torch.Tensor,
         class_labels: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        cross_attn_mask: Optional[torch.Tensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = True,
     ) -> Union[UNet2DConditionOutput, Tuple]:
@@ -383,6 +384,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
         if any(s % default_overall_up_factor != 0 for s in sample.shape[-2:]):
             logger.info("Forward upsample size to force interpolation output size.")
             forward_upsample_size = True
+
+        if cross_attn_mask is not None:
+            cross_attn_mask = (1 - cross_attn_mask.to(sample.dtype)) * -torch.finfo(sample.dtype).max
 
         # prepare attention_mask
         if attention_mask is not None:
@@ -440,6 +444,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
                     temb=emb,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
+                    cross_attn_mask=cross_attn_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
             else:
@@ -453,6 +458,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
             emb,
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
+            cross_attn_mask=cross_attn_mask,
             cross_attention_kwargs=cross_attention_kwargs,
         )
 
@@ -477,6 +483,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
                     cross_attention_kwargs=cross_attention_kwargs,
                     upsample_size=upsample_size,
                     attention_mask=attention_mask,
+                    cross_attn_mask=cross_attn_mask,
                 )
             else:
                 sample = upsample_block(

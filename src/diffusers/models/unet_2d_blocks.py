@@ -14,6 +14,7 @@
 import numpy as np
 import torch
 from torch import nn
+from typing import Optional
 
 from .attention import AttentionBlock, DualTransformer2DModel, Transformer2DModel
 from .cross_attention import CrossAttention, CrossAttnAddedKVProcessor
@@ -483,13 +484,14 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         self.resnets = nn.ModuleList(resnets)
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attn_mask: Optional[torch.Tensor] = None, cross_attention_kwargs=None
     ):
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
             hidden_states = attn(
                 hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
+                cross_attn_mask=cross_attn_mask,
                 cross_attention_kwargs=cross_attention_kwargs,
             ).sample
             hidden_states = resnet(hidden_states, temb)
@@ -758,7 +760,7 @@ class CrossAttnDownBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attn_mask: Optional[torch.Tensor] = None, cross_attention_kwargs=None
     ):
         # TODO(Patrick, William) - attention mask is not used
         output_states = ()
@@ -787,6 +789,7 @@ class CrossAttnDownBlock2D(nn.Module):
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
+                    cross_attn_mask=cross_attn_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
 
@@ -1549,6 +1552,7 @@ class CrossAttnUpBlock2D(nn.Module):
         cross_attention_kwargs=None,
         upsample_size=None,
         attention_mask=None,
+        cross_attn_mask: Optional[torch.Tensor] = None,
     ):
         # TODO(Patrick, William) - attention mask is not used
         for resnet, attn in zip(self.resnets, self.attentions):
@@ -1580,6 +1584,7 @@ class CrossAttnUpBlock2D(nn.Module):
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
+                    cross_attn_mask=cross_attn_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
 
