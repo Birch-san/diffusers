@@ -408,9 +408,19 @@ class CrossAttnAddedKVProcessor:
 
 
 class XFormersCrossAttnProcessor:
-    def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
+    def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None, cross_attn_mask: Optional[torch.Tensor] = None):
         batch_size, sequence_length, _ = hidden_states.shape
 
+        # haven't defined what to do if both are present
+        if attention_mask is not None:
+            assert cross_attn_mask is None
+        if cross_attn_mask is not None:
+            assert attention_mask is None
+            batch_size, sequence_length, _ = encoder_hidden_states.shape
+            attention_mask = cross_attn_mask
+
+        # note: xformers attn_bias is only implemented for Triton + A100 GPU
+        # https://github.com/facebookresearch/xformers/issues/576
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length)
 
         query = attn.to_q(hidden_states)
