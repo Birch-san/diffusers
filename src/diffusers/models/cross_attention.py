@@ -306,10 +306,12 @@ class SubQuadraticCrossAttnProcessor:
         hidden_states: Tensor,
         encoder_hidden_states: Optional[Tensor]=None,
         attention_mask: Optional[Tensor]=None,
+        cross_attn_mask: Optional[Tensor] = None,
     ):
         encoder_hidden_states = hidden_states if encoder_hidden_states is None else encoder_hidden_states
 
         assert attention_mask is None, "attention-mask not currently implemented for SubQuadraticCrossAttnProcessor."
+        assert cross_attn_mask is None, "cross-attention-mask not currently implemented for SubQuadraticCrossAttnProcessor."
         # I don't know what test case can be used to determine whether softmax is computed at sufficient bit-width,
         # but sub-quadratic attention has a pretty bespoke softmax (defers computation of the denominator) so this needs some thought.
         assert not attn.upcast_softmax or torch.finfo(hidden_states.dtype).bits >= 32, "upcast_softmax was requested, but is not implemented"
