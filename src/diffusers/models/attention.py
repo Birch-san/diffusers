@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
+from enum import Enum, auto
 from typing import Callable, Optional
 
 import torch
@@ -172,6 +173,11 @@ class AttentionBlock(nn.Module):
         # res connect and rescale
         hidden_states = (hidden_states + residual) / self.rescale_output_factor
         return hidden_states
+
+
+class AttentionMaskMode(Enum):
+    SelfAttention = auto(),
+    CrossAttention = auto()
 
 
 class BasicTransformerBlock(nn.Module):

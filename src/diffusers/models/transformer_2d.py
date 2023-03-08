@@ -21,7 +21,7 @@ from torch import nn
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..models.embeddings import ImagePositionalEmbeddings
 from ..utils import BaseOutput, deprecate
-from .attention import BasicTransformerBlock
+from .attention import AttentionMaskMode, BasicTransformerBlock
 from .embeddings import PatchEmbed
 from .modeling_utils import ModelMixin
 

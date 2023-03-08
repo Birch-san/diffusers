@@ -21,6 +21,7 @@ import torch.utils.checkpoint
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..loaders import UNet2DConditionLoadersMixin
 from ..utils import BaseOutput, logging
+from .attention import AttentionMaskMode
 from .cross_attention import AttnProcessor
 from .embeddings import GaussianFourierProjection, TimestepEmbedding, Timesteps
 from .modeling_utils import ModelMixin
@@ -492,6 +493,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         class_labels: Optional[torch.Tensor] = None,
         timestep_cond: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         down_block_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
         mid_block_additional_residual: Optional[torch.Tensor] = None,
@@ -585,6 +587,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     temb=emb,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
+                    attention_mask_mode=attention_mask_mode,
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
             else:
@@ -610,6 +613,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 emb,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
+                attention_mask_mode=attention_mask_mode,
                 cross_attention_kwargs=cross_attention_kwargs,
             )
 
@@ -637,6 +641,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     cross_attention_kwargs=cross_attention_kwargs,
                     upsample_size=upsample_size,
                     attention_mask=attention_mask,
+                    attention_mask_mode=attention_mask_mode,
                 )
             else:
                 sample = upsample_block(

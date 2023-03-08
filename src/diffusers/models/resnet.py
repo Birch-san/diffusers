@@ -4,6 +4,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import FloatTensor
 
 from .attention import AdaGroupNorm
 
@@ -108,7 +109,7 @@ class Upsample2D(nn.Module):
         else:
             self.Conv2d_0 = conv
 
-    def forward(self, hidden_states, output_size=None):
+    def forward(self, hidden_states: FloatTensor, output_size: Optional[int] = None):
         assert hidden_states.shape[1] == self.channels
 
         if self.use_conv_transpose:

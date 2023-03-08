@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional
+from typing import Optional, Dict, Any, Tuple
 
 import numpy as np
 import torch
-from torch import nn
+from torch import nn, FloatTensor
 
-from .attention import AdaGroupNorm, AttentionBlock
+from .attention import AdaGroupNorm, AttentionBlock, AttentionMaskMode
 from .cross_attention import CrossAttention, CrossAttnAddedKVProcessor
 from .dual_transformer_2d import DualTransformer2DModel
 from .resnet import Downsample2D, FirDownsample2D, FirUpsample2D, KDownsample2D, KUpsample2D, ResnetBlock2D, Upsample2D
@@ -533,7 +533,13 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         self.resnets = nn.ModuleList(resnets)
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
@@ -622,7 +628,13 @@ class UNetMidBlock2DSimpleCrossAttn(nn.Module):
         self.resnets = nn.ModuleList(resnets)
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         cross_attention_kwargs = cross_attention_kwargs if cross_attention_kwargs is not None else {}
         hidden_states = self.resnets[0](hidden_states, temb)
@@ -632,6 +644,7 @@ class UNetMidBlock2DSimpleCrossAttn(nn.Module):
                 hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
+                attention_mask_mode=attention_mask_mode,
                 **cross_attention_kwargs,
             )
 
@@ -808,7 +821,13 @@ class CrossAttnDownBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         # TODO(Patrick, William) - attention mask is not used
         output_states = ()
@@ -1404,7 +1423,13 @@ class SimpleCrossAttnDownBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         output_states = ()
         cross_attention_kwargs = cross_attention_kwargs if cross_attention_kwargs is not None else {}
@@ -1418,6 +1443,7 @@ class SimpleCrossAttnDownBlock2D(nn.Module):
                 hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
+                attention_mask_mode=attention_mask_mode,
                 **cross_attention_kwargs,
             )
 
@@ -1569,7 +1595,13 @@ class KCrossAttnDownBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         output_states = ()
 
@@ -1591,6 +1623,7 @@ class KCrossAttnDownBlock2D(nn.Module):
                     hidden_states,
                     encoder_hidden_states,
                     attention_mask,
+                    attention_mask_mode,
                     cross_attention_kwargs,
                 )
             else:
@@ -1600,6 +1633,7 @@ class KCrossAttnDownBlock2D(nn.Module):
                     encoder_hidden_states=encoder_hidden_states,
                     emb=temb,
                     attention_mask=attention_mask,
+                    attention_mask_mode=attention_mask_mode,
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
 
@@ -1775,13 +1809,14 @@ class CrossAttnUpBlock2D(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        res_hidden_states_tuple,
-        temb=None,
-        encoder_hidden_states=None,
-        cross_attention_kwargs=None,
-        upsample_size=None,
-        attention_mask=None,
+        hidden_states: FloatTensor,
+        res_hidden_states_tuple: Tuple[FloatTensor, ...],
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        upsample_size: Optional[int] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
     ):
         # TODO(Patrick, William) - attention mask is not used
         for resnet, attn in zip(self.resnets, self.attentions):
@@ -2398,13 +2433,14 @@ class SimpleCrossAttnUpBlock2D(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        res_hidden_states_tuple,
-        temb=None,
-        encoder_hidden_states=None,
-        upsample_size=None,
-        attention_mask=None,
-        cross_attention_kwargs=None,
+        hidden_states: FloatTensor,
+        res_hidden_states_tuple: Tuple[FloatTensor, ...],
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        upsample_size: Optional[int] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         cross_attention_kwargs = cross_attention_kwargs if cross_attention_kwargs is not None else {}
         for resnet, attn in zip(self.resnets, self.attentions):
@@ -2421,6 +2457,7 @@ class SimpleCrossAttnUpBlock2D(nn.Module):
                 hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
+                attention_mask_mode=attention_mask_mode,
                 **cross_attention_kwargs,
             )
 
@@ -2590,13 +2627,14 @@ class KCrossAttnUpBlock2D(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        res_hidden_states_tuple,
-        temb=None,
-        encoder_hidden_states=None,
-        cross_attention_kwargs=None,
-        upsample_size=None,
-        attention_mask=None,
+        hidden_states: FloatTensor,
+        res_hidden_states_tuple: Tuple[FloatTensor, ...],
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        upsample_size: Optional[int] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
     ):
         res_hidden_states_tuple = res_hidden_states_tuple[-1]
         if res_hidden_states_tuple is not None:
@@ -2620,6 +2658,7 @@ class KCrossAttnUpBlock2D(nn.Module):
                     hidden_states,
                     encoder_hidden_states,
                     attention_mask,
+                    attention_mask_mode,
                     cross_attention_kwargs,
                 )[0]
             else:
@@ -2629,6 +2668,7 @@ class KCrossAttnUpBlock2D(nn.Module):
                     encoder_hidden_states=encoder_hidden_states,
                     emb=temb,
                     attention_mask=attention_mask,
+                    attention_mask_mode=attention_mask_mode,
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
 
@@ -2708,11 +2748,12 @@ class KAttentionBlock(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        encoder_hidden_states=None,
-        emb=None,
-        attention_mask=None,
-        cross_attention_kwargs=None,
+        hidden_states: FloatTensor,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        emb: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        attention_mask_mode: AttentionMaskMode = AttentionMaskMode.SelfAttention,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         cross_attention_kwargs = cross_attention_kwargs if cross_attention_kwargs is not None else {}
 
