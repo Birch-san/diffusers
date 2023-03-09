@@ -622,31 +622,53 @@ class SlicedAttnProcessor:
     def __init__(self, slice_size):
         self.slice_size = slice_size
 
-    def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
-        batch_size, sequence_length, _ = hidden_states.shape
-
-        attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-
-        query = attn.to_q(hidden_states)
-        dim = query.shape[-1]
-        query = attn.head_to_batch_dim(query)
-
+    def __call__(
+        self,
+        attn: CrossAttention,
+        hidden_states: FloatTensor,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        encoder_attention_bias: Optional[FloatTensor] = None,
+    ):
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
-        elif attn.cross_attention_norm:
-            encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
+        else:
+            if encoder_attention_bias is not None:
+                if attention_mask is not None:
+                    # it's not well-defined whether `attention_mask` should be passed to self-attention, cross-attention, neither* or both.
+                    # if two sources of bias (`attention_mask`, `encoder_attention_bias`) are provided: it's likely to be a mistake.
+                    raise ValueError(f"two attention biases have been supplied: `attention_mask` and `encoder_attention_bias`. expected a maximum of one source of bias.")
+                attention_mask = encoder_attention_bias
+                # make broadcastable over query tokens
+                # TODO: see if there's a satisfactory way to unify how the `attention_mask`/`encoder_attention_bias` code paths
+                #       create this singleton dim. the way AttnProcessor2_0 does it could work.
+                # here I'm trying to avoid interfering with the original `attention_mask` code path,
+                # by limiting the unsqueeze() to just the `encoder_attention_bias` path, on the basis that
+                # `attention_mask` is already working without this change.
+                # maybe it's because UNet2DConditionModel#forward unsqueeze()s `attention_mask` earlier.
+                attention_mask = attention_mask.unsqueeze(-2)
+            if attn.cross_attention_norm:
+                encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
+
+        batch_size, key_tokens, _ = encoder_hidden_states.shape
+        attention_mask = attn.prepare_attention_mask(attention_mask, key_tokens, batch_size)
+
+        query = attn.to_q(hidden_states)
+        query = attn.head_to_batch_dim(query)
 
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
-        batch_size_attention = query.shape[0]
+        batch_x_heads, query_tokens, _ = query.shape
+        inner_dim = attn.to_q.out_features
+        channels_per_head = inner_dim // attn.heads
         hidden_states = torch.zeros(
-            (batch_size_attention, sequence_length, dim // attn.heads), device=query.device, dtype=query.dtype
+            (batch_x_heads, query_tokens, channels_per_head), device=query.device, dtype=query.dtype
         )
 
-        for i in range(hidden_states.shape[0] // self.slice_size):
+        for i in range(batch_x_heads // self.slice_size):
             start_idx = i * self.slice_size
             end_idx = (i + 1) * self.slice_size
 
@@ -662,10 +684,10 @@ class SlicedAttnProcessor:
 
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
-        # linear proj
-        hidden_states = attn.to_out[0](hidden_states)
-        # dropout
-        hidden_states = attn.to_out[1](hidden_states)
+        linear_proj, dropout = attn.to_out
+
+        hidden_states = linear_proj(hidden_states)
+        hidden_states = dropout(hidden_states)
 
         return hidden_states
 
