@@ -21,6 +21,7 @@ import torch.utils.checkpoint
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..loaders import UNet2DConditionLoadersMixin
 from ..utils import BaseOutput, logging
+from .attention_utils import mask_to_bias
 from .cross_attention import AttnProcessor
 from .embeddings import GaussianFourierProjection, TimestepEmbedding, Timesteps
 from .modeling_utils import ModelMixin
@@ -530,7 +531,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
 
         # prepare attention_mask
         if attention_mask is not None:
-            attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
+            attention_mask = mask_to_bias(attention_mask, sample.dtype)
+            # create singleton dimension for broadcasting bias over query tokens
             attention_mask = attention_mask.unsqueeze(1)
 
         # 0. center input if necessary

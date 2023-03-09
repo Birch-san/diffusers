@@ -15,7 +15,7 @@ from typing import Callable, Optional, Union
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import nn, FloatTensor
 
 from ..utils import deprecate, logging
 from ..utils.import_utils import is_xformers_available
@@ -272,7 +272,13 @@ class CrossAttention(nn.Module):
         if attention_mask is None:
             return attention_mask
 
-        if attention_mask.shape[-1] != target_length:
+        current_length: int = attention_mask.shape[-1]
+        if current_length > target_length:
+            # we *could* trim the mask with:
+            #   attention_mask = attention_mask[:,:target_length]
+            # but this is weird enough that it's more likely to be a mistake than a shortcut
+            raise ValueError(f"mask's length ({current_length}) exceeds the sequence length ({target_length}).")
+        elif current_length < target_length:
             if attention_mask.device.type == "mps":
                 # HACK: MPS: Does not support padding by greater than dimension of input tensor.
                 # Instead, we can manually construct the padding tensor.
@@ -280,7 +286,8 @@ class CrossAttention(nn.Module):
                 padding = torch.zeros(padding_shape, dtype=attention_mask.dtype, device=attention_mask.device)
                 attention_mask = torch.cat([attention_mask, padding], dim=2)
             else:
-                attention_mask = F.pad(attention_mask, (0, target_length), value=0.0)
+                remaining_length: int = target_length-current_length
+                attention_mask = F.pad(attention_mask, (0, remaining_length), value=0.0)
 
         if attention_mask.shape[0] < batch_size * head_size:
             attention_mask = attention_mask.repeat_interleave(head_size, dim=0)
@@ -291,19 +298,31 @@ class CrossAttnProcessor:
     def __call__(
         self,
         attn: CrossAttention,
-        hidden_states,
-        encoder_hidden_states=None,
-        attention_mask=None,
+        hidden_states: FloatTensor,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        encoder_attention_bias: Optional[FloatTensor] = None,
     ):
-        batch_size, sequence_length, _ = hidden_states.shape
-        attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-        query = attn.to_q(hidden_states)
-
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
-        elif attn.cross_attention_norm:
-            encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
+        else:
+            if encoder_attention_bias is not None:
+                if attention_mask is not None:
+                    # it's not well-defined whether `attention_mask` should be passed to self-attention, cross-attention, neither* or both.
+                    # if two sources of bias (`attention_mask`, `encoder_attention_bias`) are provided: it's likely to be a mistake.
+                    raise ValueError(f"two attention biases have been supplied: `attention_mask` and `encoder_attention_bias`. expected a maximum of one source of bias.")
+                attention_mask = encoder_attention_bias
+                # make broadcastable over query tokens
+                # TODO: consider aligning implementations such that AttnProcessor2_0 and CrossAttnProcessor do unsqueeze
+                #       in the same way/circumstances -- AttnProcessor2_0 does it for `attention_mask` **and** for `encoder_attention_bias`.
+                attention_mask = attention_mask.unsqueeze(-2)
+            if attn.cross_attention_norm:
+                encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
+        
+        batch_size, key_tokens, _ = encoder_hidden_states.shape
+        attention_mask = attn.prepare_attention_mask(attention_mask, key_tokens, batch_size)
 
+        query = attn.to_q(hidden_states)
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
 
@@ -315,10 +334,10 @@ class CrossAttnProcessor:
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
-        # linear proj
-        hidden_states = attn.to_out[0](hidden_states)
-        # dropout
-        hidden_states = attn.to_out[1](hidden_states)
+        linear_proj, dropout = attn.to_out
+
+        hidden_states = linear_proj(hidden_states)
+        hidden_states = dropout(hidden_states)
 
         return hidden_states
 
@@ -471,25 +490,39 @@ class AttnProcessor2_0:
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
 
-    def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
-        batch_size, sequence_length, inner_dim = hidden_states.shape
+    def __call__(
+        self,
+        attn: CrossAttention,
+        hidden_states: FloatTensor,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        encoder_attention_bias: Optional[FloatTensor] = None,
+    ):
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            if encoder_attention_bias is not None:
+                if attention_mask is not None:
+                    # it's not well-defined whether `attention_mask` should be passed to self-attention, cross-attention, neither* or both.
+                    # if two sources of bias (`attention_mask`, `encoder_attention_bias`) are provided: it's likely to be a mistake.
+                    raise ValueError(f"two attention biases have been supplied: `attention_mask` and `encoder_attention_bias`. expected a maximum of one source of bias.")
+                attention_mask = encoder_attention_bias
+            if attn.cross_attention_norm:
+                encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
+        
+        batch_size, key_tokens, _ = encoder_hidden_states.shape
 
         if attention_mask is not None:
-            attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+            attention_mask = attn.prepare_attention_mask(attention_mask, key_tokens, batch_size)
             # scaled_dot_product_attention expects attention_mask shape to be
             # (batch, heads, source_length, target_length)
             attention_mask = attention_mask.view(batch_size, attn.heads, -1, attention_mask.shape[-1])
 
         query = attn.to_q(hidden_states)
-
-        if encoder_hidden_states is None:
-            encoder_hidden_states = hidden_states
-        elif attn.cross_attention_norm:
-            encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
-
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
 
+        inner_dim = attn.to_q.out_features
         head_dim = inner_dim // attn.heads
         query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
@@ -503,10 +536,10 @@ class AttnProcessor2_0:
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
 
-        # linear proj
-        hidden_states = attn.to_out[0](hidden_states)
-        # dropout
-        hidden_states = attn.to_out[1](hidden_states)
+        linear_proj, dropout = attn.to_out
+
+        hidden_states = linear_proj(hidden_states)
+        hidden_states = dropout(hidden_states)
         return hidden_states
 
 
