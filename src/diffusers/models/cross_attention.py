@@ -252,6 +252,8 @@ class CrossAttention(nn.Module):
             beta=beta,
             alpha=self.scale,
         )
+        # accessing the tensor seems to help prevent black images on MPS on PyTorch nightly
+        assert not attention_scores.isnan().any().item()
 
         if self.upcast_softmax:
             attention_scores = attention_scores.float()
@@ -563,6 +565,8 @@ class AttnProcessor2_0:
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
+        # accessing the tensor seems to help prevent black images on MPS on PyTorch nightly
+        assert not hidden_states.isnan().any().item()
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
