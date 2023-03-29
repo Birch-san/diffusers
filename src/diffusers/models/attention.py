@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict, Any
 
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import nn, LongTensor, FloatTensor, Tensor
 
 from ..utils.import_utils import is_xformers_available
 from .attention_processor import Attention
@@ -275,13 +275,13 @@ class BasicTransformerBlock(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        attention_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        timestep=None,
-        cross_attention_kwargs=None,
-        class_labels=None,
+        hidden_states: Optional[FloatTensor],
+        attention_mask: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        encoder_attention_mask: Optional[FloatTensor] = None,
+        timestep: Optional[LongTensor] = None,
+        cross_attention_kwargs: Dict[str, Any] = None,
+        class_labels: Optional[LongTensor] = None,
     ):
         if self.use_ada_layer_norm:
             norm_hidden_states = self.norm1(hidden_states, timestep)
@@ -308,8 +308,6 @@ class BasicTransformerBlock(nn.Module):
             norm_hidden_states = (
                 self.norm2(hidden_states, timestep) if self.use_ada_layer_norm else self.norm2(hidden_states)
             )
-            # TODO (Birch-San): Here we should prepare the encoder_attention mask correctly
-            # prepare attention mask here
 
             # 2. Cross-Attention
             attn_output = self.attn2(
