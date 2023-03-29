@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -292,13 +292,13 @@ class BasicTransformerBlock(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        attention_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        timestep=None,
-        cross_attention_kwargs=None,
-        class_labels=None,
+        hidden_states: torch.FloatTensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        timestep: Optional[torch.LongTensor] = None,
+        cross_attention_kwargs: Dict[str, Any] = None,
+        class_labels: Optional[torch.LongTensor] = None,
     ):
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 1. Self-Attention
@@ -327,8 +327,6 @@ class BasicTransformerBlock(nn.Module):
             norm_hidden_states = (
                 self.norm2(hidden_states, timestep) if self.use_ada_layer_norm else self.norm2(hidden_states)
             )
-            # TODO (Birch-San): Here we should prepare the encoder_attention mask correctly
-            # prepare attention mask here
 
             attn_output = self.attn2(
                 norm_hidden_states,
