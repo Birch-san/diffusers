@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
+from torch import FloatTensor
 
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...models import ModelMixin
@@ -10,7 +11,7 @@ from ...models.attention import Attention
 from ...models.attention_processor import AttentionProcessor, AttnAddedKVProcessor, AttnProcessor
 from ...models.dual_transformer_2d import DualTransformer2DModel
 from ...models.embeddings import GaussianFourierProjection, TimestepEmbedding, Timesteps
-from ...models.transformer_2d import Transformer2DModel
+from ...models.transformer_2d import Transformer2DModel, Transformer2DModelOutput
 from ...models.unet_2d_condition import UNet2DConditionOutput
 from ...utils import logging
 
@@ -613,6 +614,7 @@ class UNetFlatConditionModel(ModelMixin, ConfigMixin):
         sample: torch.FloatTensor,
         timestep: Union[torch.Tensor, float, int],
         encoder_hidden_states: torch.Tensor,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
         class_labels: Optional[torch.Tensor] = None,
         timestep_cond: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
@@ -626,6 +628,10 @@ class UNetFlatConditionModel(ModelMixin, ConfigMixin):
             sample (`torch.FloatTensor`): (batch, channel, height, width) noisy inputs tensor
             timestep (`torch.FloatTensor` or `float` or `int`): (batch) timesteps
             encoder_hidden_states (`torch.FloatTensor`): (batch, sequence_length, feature_dim) encoder hidden states
+            encoder_attention_mask (`torch.Tensor`):
+                (batch, sequence_length) cross-attention mask (or bias), applied to encoder_hidden_states. if a
+                BoolTensor is provided: will be turned into a bias, by adding a large negative value. False = hide
+                token. other tensor types will be used as a bias as-is.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`models.unet_2d_condition.UNet2DConditionOutput`] instead of a plain tuple.
             cross_attention_kwargs (`dict`, *optional*):
@@ -656,6 +662,13 @@ class UNetFlatConditionModel(ModelMixin, ConfigMixin):
         if attention_mask is not None:
             attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
             attention_mask = attention_mask.unsqueeze(1)
+
+        # ensure encoder_attention_mask is a bias, and make it broadcastable over multi-head-attention channels
+        if encoder_attention_mask is not None:
+            # if it's a mask: turn it into a bias. otherwise: assume it's already a bias
+            if encoder_attention_mask.dtype is torch.bool:
+                encoder_attention_mask = (1 - encoder_attention_mask.to(sample.dtype)) * -10000.0
+            encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
 
         # 0. center input if necessary
         if self.config.center_input_sample:
@@ -712,6 +725,7 @@ class UNetFlatConditionModel(ModelMixin, ConfigMixin):
                     hidden_states=sample,
                     temb=emb,
                     encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
                     attention_mask=attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
@@ -737,6 +751,7 @@ class UNetFlatConditionModel(ModelMixin, ConfigMixin):
                 sample,
                 emb,
                 encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
                 attention_mask=attention_mask,
                 cross_attention_kwargs=cross_attention_kwargs,
             )
@@ -762,6 +777,7 @@ class UNetFlatConditionModel(ModelMixin, ConfigMixin):
                     temb=emb,
                     res_hidden_states_tuple=res_samples,
                     encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                     upsample_size=upsample_size,
                     attention_mask=attention_mask,
@@ -1065,9 +1081,14 @@ class CrossAttnDownBlockFlat(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        encoder_attention_mask: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        # TODO(Patrick, William) - attention mask is not used
         output_states = ()
 
         for resnet, attn in zip(self.resnets, self.attentions):
@@ -1086,14 +1107,18 @@ class CrossAttnDownBlockFlat(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(attn, return_dict=False),
                     hidden_states,
+                    attention_mask,
                     encoder_hidden_states,
+                    encoder_attention_mask,
                     cross_attention_kwargs,
                 )[0]
             else:
                 hidden_states = resnet(hidden_states, temb)
                 hidden_states = attn(
                     hidden_states,
+                    attention_mask=attention_mask,
                     encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
 
@@ -1269,15 +1294,15 @@ class CrossAttnUpBlockFlat(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        res_hidden_states_tuple,
-        temb=None,
-        encoder_hidden_states=None,
-        cross_attention_kwargs=None,
-        upsample_size=None,
-        attention_mask=None,
+        hidden_states: FloatTensor,
+        res_hidden_states_tuple: Tuple[FloatTensor, ...],
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        encoder_attention_mask: Optional[FloatTensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        upsample_size: Optional[int] = None,
+        attention_mask: Optional[FloatTensor] = None,
     ):
-        # TODO(Patrick, William) - attention mask is not used
         for resnet, attn in zip(self.resnets, self.attentions):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
@@ -1299,14 +1324,18 @@ class CrossAttnUpBlockFlat(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(attn, return_dict=False),
                     hidden_states,
+                    attention_mask,
                     encoder_hidden_states,
+                    encoder_attention_mask,
                     cross_attention_kwargs,
                 )[0]
             else:
                 hidden_states = resnet(hidden_states, temb)
                 hidden_states = attn(
                     hidden_states,
+                    attention_mask=attention_mask,
                     encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
 
@@ -1404,15 +1433,24 @@ class UNetMidBlockFlatCrossAttn(nn.Module):
         self.resnets = nn.ModuleList(resnets)
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
-    ):
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        encoder_attention_mask: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> FloatTensor:
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
-            hidden_states = attn(
+            output: Transformer2DModelOutput = attn(
                 hidden_states,
+                attention_mask=attention_mask,
                 encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
                 cross_attention_kwargs=cross_attention_kwargs,
-            ).sample
+            )
+            hidden_states = output.sample
             hidden_states = resnet(hidden_states, temb)
 
         return hidden_states

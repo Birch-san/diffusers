@@ -11,17 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
-from torch import nn
+from torch import FloatTensor, nn
 
 from .attention import AdaGroupNorm, AttentionBlock
 from .attention_processor import Attention, AttnAddedKVProcessor
 from .dual_transformer_2d import DualTransformer2DModel
 from .resnet import Downsample2D, FirDownsample2D, FirUpsample2D, KDownsample2D, KUpsample2D, ResnetBlock2D, Upsample2D
-from .transformer_2d import Transformer2DModel
+from .transformer_2d import Transformer2DModel, Transformer2DModelOutput
 
 
 def get_down_block(
@@ -533,15 +533,24 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         self.resnets = nn.ModuleList(resnets)
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
-    ):
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        encoder_attention_mask: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> FloatTensor:
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
-            hidden_states = attn(
+            output: Transformer2DModelOutput = attn(
                 hidden_states,
+                attention_mask=attention_mask,
                 encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
                 cross_attention_kwargs=cross_attention_kwargs,
-            ).sample
+            )
+            hidden_states = output.sample
             hidden_states = resnet(hidden_states, temb)
 
         return hidden_states
@@ -808,9 +817,14 @@ class CrossAttnDownBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self,
+        hidden_states: FloatTensor,
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        encoder_attention_mask: Optional[FloatTensor] = None,
+        attention_mask: Optional[FloatTensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        # TODO(Patrick, William) - attention mask is not used
         output_states = ()
 
         for resnet, attn in zip(self.resnets, self.attentions):
@@ -829,14 +843,18 @@ class CrossAttnDownBlock2D(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(attn, return_dict=False),
                     hidden_states,
+                    attention_mask,
                     encoder_hidden_states,
+                    encoder_attention_mask,
                     cross_attention_kwargs,
                 )[0]
             else:
                 hidden_states = resnet(hidden_states, temb)
                 hidden_states = attn(
                     hidden_states,
+                    attention_mask=attention_mask,
                     encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
 
@@ -1775,15 +1793,15 @@ class CrossAttnUpBlock2D(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        res_hidden_states_tuple,
-        temb=None,
-        encoder_hidden_states=None,
-        cross_attention_kwargs=None,
-        upsample_size=None,
-        attention_mask=None,
+        hidden_states: FloatTensor,
+        res_hidden_states_tuple: Tuple[FloatTensor, ...],
+        temb: Optional[FloatTensor] = None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        encoder_attention_mask: Optional[FloatTensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        upsample_size: Optional[int] = None,
+        attention_mask: Optional[FloatTensor] = None,
     ):
-        # TODO(Patrick, William) - attention mask is not used
         for resnet, attn in zip(self.resnets, self.attentions):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
@@ -1805,14 +1823,18 @@ class CrossAttnUpBlock2D(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(attn, return_dict=False),
                     hidden_states,
+                    attention_mask,
                     encoder_hidden_states,
+                    encoder_attention_mask,
                     cross_attention_kwargs,
                 )[0]
             else:
                 hidden_states = resnet(hidden_states, temb)
                 hidden_states = attn(
                     hidden_states,
+                    attention_mask=attention_mask,
                     encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
 
