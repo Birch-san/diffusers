@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
-from torch import FloatTensor, nn
+from torch import nn
 
 from .attention import AdaGroupNorm, AttentionBlock
 from .attention_processor import Attention, AttnAddedKVProcessor
@@ -534,13 +534,13 @@ class UNetMidBlock2DCrossAttn(nn.Module):
 
     def forward(
         self,
-        hidden_states: FloatTensor,
-        temb: Optional[FloatTensor] = None,
-        encoder_hidden_states: Optional[FloatTensor] = None,
-        encoder_attention_mask: Optional[FloatTensor] = None,
-        attention_mask: Optional[FloatTensor] = None,
+        hidden_states: torch.FloatTensor,
+        temb: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> FloatTensor:
+    ) -> torch.FloatTensor:
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
             output: Transformer2DModelOutput = attn(
@@ -818,11 +818,11 @@ class CrossAttnDownBlock2D(nn.Module):
 
     def forward(
         self,
-        hidden_states: FloatTensor,
-        temb: Optional[FloatTensor] = None,
-        encoder_hidden_states: Optional[FloatTensor] = None,
-        encoder_attention_mask: Optional[FloatTensor] = None,
-        attention_mask: Optional[FloatTensor] = None,
+        hidden_states: torch.FloatTensor,
+        temb: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         output_states = ()
@@ -1793,14 +1793,14 @@ class CrossAttnUpBlock2D(nn.Module):
 
     def forward(
         self,
-        hidden_states: FloatTensor,
-        res_hidden_states_tuple: Tuple[FloatTensor, ...],
-        temb: Optional[FloatTensor] = None,
-        encoder_hidden_states: Optional[FloatTensor] = None,
-        encoder_attention_mask: Optional[FloatTensor] = None,
+        hidden_states: torch.FloatTensor,
+        res_hidden_states_tuple: Tuple[torch.FloatTensor, ...],
+        temb: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         upsample_size: Optional[int] = None,
-        attention_mask: Optional[FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
     ):
         for resnet, attn in zip(self.resnets, self.attentions):
             # pop res hidden states
