@@ -214,12 +214,12 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
         encoder_hidden_states: Optional[torch.Tensor] = None,
-        encoder_attention_mask: Optional[torch.Tensor] = None,
         timestep: Optional[torch.LongTensor] = None,
         class_labels: Optional[torch.LongTensor] = None,
         cross_attention_kwargs: Dict[str, Any] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
     ):
         """
@@ -227,18 +227,18 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             hidden_states ( When discrete, `torch.LongTensor` of shape `(batch size, num latent pixels)`.
                 When continuous, `torch.FloatTensor` of shape `(batch size, channel, height, width)`): Input
                 hidden_states
-            attention_mask ( `torch.Tensor` of shape (batch size, num latent pixels), *optional* ).
-                Bias to add to attention scores.
             encoder_hidden_states ( `torch.LongTensor` of shape `(batch size, encoder_hidden_states dim)`, *optional*):
                 Conditional embeddings for cross attention layer. If not given, cross-attention defaults to
                 self-attention.
-            encoder_attention_mask ( `torch.Tensor` of shape (batch size, num encoder tokens), *optional* ).
-                Bias to add to cross-attention scores.
             timestep ( `torch.LongTensor`, *optional*):
                 Optional timestep to be applied as an embedding in AdaLayerNorm's. Used to indicate denoising step.
             class_labels ( `torch.LongTensor` of shape `(batch size, num classes)`, *optional*):
                 Optional class labels to be applied as an embedding in AdaLayerZeroNorm. Used to indicate class labels
                 conditioning.
+            attention_mask ( `torch.Tensor` of shape (batch size, num latent pixels), *optional* ).
+                Bias to add to attention scores.
+            encoder_attention_mask ( `torch.Tensor` of shape (batch size, num encoder tokens), *optional* ).
+                Bias to add to cross-attention scores.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`models.unet_2d_condition.UNet2DConditionOutput`] instead of a plain tuple.
 
