@@ -15,7 +15,7 @@ from typing import Callable, Optional, Union
 
 import torch
 import torch.nn.functional as F
-from torch import FloatTensor, nn
+from torch import nn
 
 from ..utils import deprecate, logging
 from ..utils.import_utils import is_xformers_available
@@ -451,9 +451,9 @@ class XFormersAttnProcessor:
     def __call__(
         self,
         attn: Attention,
-        hidden_states: FloatTensor,
-        encoder_hidden_states: Optional[FloatTensor] = None,
-        attention_mask: Optional[FloatTensor] = None,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
     ):
         batch_size, key_tokens, _ = (
             hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
