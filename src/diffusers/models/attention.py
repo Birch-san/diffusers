@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Optional
 
 import torch
 import torch.nn.functional as F
-from torch import FloatTensor, LongTensor, nn
+from torch import nn
 
 from ..utils.import_utils import is_xformers_available
 from .attention_processor import Attention
@@ -275,13 +275,13 @@ class BasicTransformerBlock(nn.Module):
 
     def forward(
         self,
-        hidden_states: Optional[FloatTensor],
-        attention_mask: Optional[FloatTensor] = None,
-        encoder_hidden_states: Optional[FloatTensor] = None,
-        encoder_attention_mask: Optional[FloatTensor] = None,
-        timestep: Optional[LongTensor] = None,
+        hidden_states: torch.FloatTensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        timestep: Optional[torch.LongTensor] = None,
         cross_attention_kwargs: Dict[str, Any] = None,
-        class_labels: Optional[LongTensor] = None,
+        class_labels: Optional[torch.LongTensor] = None,
     ):
         if self.use_ada_layer_norm:
             norm_hidden_states = self.norm1(hidden_states, timestep)
