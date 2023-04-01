@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 import torch
 import torch.nn.functional as F
-from torch import LongTensor, Tensor, nn
+from torch import nn
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..models.embeddings import ImagePositionalEmbeddings
@@ -213,12 +213,12 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
 
     def forward(
         self,
-        hidden_states: Tensor,
-        attention_mask: Optional[Tensor] = None,
-        encoder_hidden_states: Optional[Tensor] = None,
-        encoder_attention_mask: Optional[Tensor] = None,
-        timestep: Optional[LongTensor] = None,
-        class_labels: Optional[LongTensor] = None,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.LongTensor] = None,
+        class_labels: Optional[torch.LongTensor] = None,
         cross_attention_kwargs: Dict[str, Any] = None,
         return_dict: bool = True,
     ):
