@@ -238,7 +238,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             attention_mask ( `torch.Tensor` of shape (batch size, num latent pixels), *optional* ).
                 Bias to add to attention scores.
             encoder_attention_mask ( `torch.Tensor` of shape (batch size, num encoder tokens), *optional* ).
-                Bias to add to cross-attention scores. Bool values will be interpreted as a mask by converting to an appropriate bias (`0.0` when `True`, or a large negative value when `False`).
+                Bias to add to cross-attention scores.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`models.unet_2d_condition.UNet2DConditionOutput`] instead of a plain tuple.
 
