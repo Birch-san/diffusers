@@ -1107,8 +1107,8 @@ class CrossAttnDownBlockFlat(nn.Module):
                     create_custom_forward(attn, return_dict=False),
                     hidden_states,
                     encoder_hidden_states,
-                    None,
-                    None,
+                    None,  # timestep
+                    None,  # class_labels
                     cross_attention_kwargs,
                     attention_mask,
                     encoder_attention_mask,
@@ -1326,8 +1326,8 @@ class CrossAttnUpBlockFlat(nn.Module):
                     create_custom_forward(attn, return_dict=False),
                     hidden_states,
                     encoder_hidden_states,
-                    None,
-                    None,
+                    None,  # timestep
+                    None,  # class_labels
                     cross_attention_kwargs,
                     attention_mask,
                     encoder_attention_mask,
