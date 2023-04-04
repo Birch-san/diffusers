@@ -628,9 +628,9 @@ class UNetFlatConditionModel(ModelMixin, ConfigMixin):
             timestep (`torch.FloatTensor` or `float` or `int`): (batch) timesteps
             encoder_hidden_states (`torch.FloatTensor`): (batch, sequence_length, feature_dim) encoder hidden states
             encoder_attention_mask (`torch.Tensor`):
-                (batch, sequence_length) cross-attention mask (or bias), applied to encoder_hidden_states. if a
-                BoolTensor is provided: will be turned into a bias, by adding a large negative value. False = hide
-                token. other tensor types will be used as a bias as-is.
+                (batch, sequence_length) cross-attention mask (or bias), applied to encoder_hidden_states. If a
+                BoolTensor is provided, it will be turned into a bias, by adding a large negative value. False = hide
+                token. Other tensor types will be used as-is as bias values.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`models.unet_2d_condition.UNet2DConditionOutput`] instead of a plain tuple.
             cross_attention_kwargs (`dict`, *optional*):
