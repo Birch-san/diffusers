@@ -238,6 +238,40 @@ class Attention(nn.Module):
         tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size * head_size, seq_len, dim // head_size)
         return tensor
 
+    def softmax(x: torch.FloatTensor, dim=-1) -> torch.FloatTensor:
+        maxes = x.max(dim, keepdim=True).values
+        diffs = x-maxes
+        del x, maxes
+        x_exp = diffs.exp()
+        del diffs
+        x_exp_sum = x_exp.sum(dim, keepdim=True)
+        quotient = x_exp/x_exp_sum
+        return quotient
+
+    def topk_softmax(x: torch.FloatTensor, k: int, dim=-1) -> torch.FloatTensor:
+        maxes = x.max(dim, keepdim=True).values
+        diffs = x-maxes
+        del x, maxes
+        x_exp = diffs.exp()
+        del diffs
+        x_exp_sum = x_exp.topk(k=k, dim=dim).values.sum(dim, keepdim=True)
+        x_exp_sum = x_exp.sum(dim, keepdim=True)
+        quotient = x_exp/x_exp_sum
+        return quotient
+    
+    def resample_crude_softmax(x: torch.FloatTensor, k: int, dim=-1) -> torch.FloatTensor:
+        """Softmax with a modified denominator. for each query token: resamples key dimension to size k; you can use this to increase/decrease denominator to the magnitude on which the model was trained."""
+        maxes = x.max(dim, keepdim=True).values
+        diffs = x-maxes
+        del maxes
+        x_exp = diffs.exp()
+        diffs_resampled = torch.nn.functional.interpolate(diffs, scale_factor=k/diffs.size(-1), mode='nearest-exact', antialias=False)
+        del diffs
+        diffs_exp_sum = diffs_resampled.exp().sum(dim, keepdim=True)
+        del diffs_resampled
+        quotient = x_exp/diffs_exp_sum
+        return quotient
+
     def get_attention_scores(self, query, key, attention_mask=None):
         dtype = query.dtype
         if self.upcast_attention:
