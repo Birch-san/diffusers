@@ -33,6 +33,8 @@ else:
 
 class Attention(nn.Module):
     is_self_attention: bool
+    sigma: Optional[float] = None
+
     r"""
     A cross attention layer.
 
