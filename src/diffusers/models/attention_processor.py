@@ -260,6 +260,15 @@ class Attention(nn.Module):
             beta=beta,
             alpha=self.scale,
         )
+        # assert self.sigma is not None
+        # if self.is_self_attention:
+        #     makedirs('out_tensor', exist_ok=True)
+        #     qname = f'out_tensor/f{self.key_length_factor}_s{self.sigma:.4f}_k{key.size(-2)}_c{key.size(-1)}_q_proj.pt'
+        #     kname = f'out_tensor/f{self.key_length_factor}_s{self.sigma:.4f}_k{key.size(-2)}_c{key.size(-1)}_k_proj.pt'
+        #     if not exists(qname):
+        #         torch.save(query, qname)
+        #     if not exists(kname):
+        #         torch.save(key, kname)
 
         if self.upcast_softmax:
             attention_scores = attention_scores.float()
