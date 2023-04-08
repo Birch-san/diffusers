@@ -33,6 +33,11 @@ else:
 
 class Attention(nn.Module):
     is_self_attention: bool
+    # if you receive a key whose length differs from those in the training distribution:
+    # softmax averaging will have a different-than-expected denominator and likewise attention probabilities.
+    # this property can be assigned from outside the Unet, to help us decide how to adjust the softmax result
+    # to bring it back into distribution.
+    key_length_factor = 1.
     sigma: Optional[float] = None
 
     r"""
