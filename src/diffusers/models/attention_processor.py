@@ -32,6 +32,7 @@ else:
 
 
 class Attention(nn.Module):
+    is_self_attention: bool
     r"""
     A cross attention layer.
 
@@ -65,6 +66,7 @@ class Attention(nn.Module):
     ):
         super().__init__()
         inner_dim = dim_head * heads
+        self.is_self_attention = cross_attention_dim is None
         cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
         self.upcast_attention = upcast_attention
         self.upcast_softmax = upcast_softmax
