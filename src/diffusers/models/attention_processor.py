@@ -309,7 +309,19 @@ class Attention(nn.Module):
         if self.upcast_softmax:
             attention_scores = attention_scores.float()
 
-        attention_probs = attention_scores.softmax(dim=-1)
+        if self.key_length_factor == 1.0:
+            # normal attention
+            attention_probs = attention_scores.softmax(dim=-1)
+        else:
+            # uncomment any of these alternative softmaxes to play with "bringing denominator back into distribution"
+            attention_probs = attention_scores.softmax(dim=-1)
+            # attention_probs = Attention.softmax(attention_scores)
+            # attention_probs = attention_probs * self.key_length_factor
+            # key_tokens = attention_scores.size(-1)
+            # preferred_token_count = int(key_tokens/self.key_length_factor)
+            # attention_probs = Attention.topk_softmax(attention_scores, k=preferred_token_count)
+            # attention_probs = Attention.resample_crude_softmax(attention_scores, k=preferred_token_count)
+            
         attention_probs = attention_probs.to(dtype)
 
         return attention_probs
@@ -583,6 +595,9 @@ class AttnProcessor2_0:
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
+
+        if attn.key_length_factor != 1.:
+            hidden_states = hidden_states * attn.key_length_factor
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
