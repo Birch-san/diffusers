@@ -40,6 +40,10 @@ class Attention(nn.Module):
     # this property can be assigned from outside the Unet, to help us decide how to adjust the softmax result
     # to bring it back into distribution.
     key_length_factor = 1.
+    # we receive 1D token sequence, but returning to 2D sequence helps us merge tokens via ToMe.
+    # property expected to be assigned from outside the Unet.
+    # height/width
+    self_attn_aspect_ratio = 1.
     sigma: Optional[float] = None
 
     r"""
@@ -218,6 +222,18 @@ class Attention(nn.Module):
         # The `Attention` class can call different attention processors / attention functions
         # here we simply pass along all tensors to the selected processor class
         # For standard processors that are defined here, `**cross_attention_kwargs` is empty
+        if self.is_self_attention and self.key_length_factor > 1:
+            from tomesd.merge import bipartite_soft_matching_random2d
+            kv_tokens = hidden_states.size(-2)
+            target_tokens=int(kv_tokens/self.key_length_factor)
+            width_sq=kv_tokens/self.self_attn_aspect_ratio
+            width=int(width_sq**.5)
+            height=kv_tokens//width
+            assert width*height==kv_tokens
+            tokens_to_cull=kv_tokens-target_tokens
+            sx, sy = 2, 2
+            merge, _ = bipartite_soft_matching_random2d(hidden_states, width, height, sx, sy, tokens_to_cull)
+            encoder_hidden_states = merge(hidden_states)
         return self.processor(
             self,
             hidden_states,
@@ -596,8 +612,8 @@ class AttnProcessor2_0:
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
 
-        if attn.key_length_factor != 1.:
-            hidden_states = hidden_states * attn.key_length_factor
+        # if attn.key_length_factor != 1.:
+        #     hidden_states = hidden_states * attn.key_length_factor
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
