@@ -21,6 +21,9 @@ from ..utils import deprecate, logging, maybe_allow_in_graph
 from ..utils.import_utils import is_xformers_available
 from .lora import LoRALinearLayer
 
+# from os.path import exists
+# from os import makedirs
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -30,6 +33,48 @@ if is_xformers_available():
     import xformers.ops
 else:
     xformers = None
+
+def softmax(x: torch.FloatTensor, dim=-1) -> torch.FloatTensor:
+    """A normal softmax"""
+    maxes = x.max(dim, keepdim=True).values
+    diffs = x-maxes
+    del x, maxes
+    x_exp = diffs.exp()
+    del diffs
+    x_exp_sum = x_exp.sum(dim, keepdim=True)
+    quotient = x_exp/x_exp_sum
+    return quotient
+
+def topk_softmax(x: torch.FloatTensor, k: int, dim=-1) -> torch.FloatTensor:
+    """
+    Softmax whose denominator sums only the topk scores
+    Sometimes fixes long-distance composition when generating larger-than-trained-distribution samples.
+    https://twitter.com/Birchlabs/status/1643020670912045057
+    """
+    maxes = x.max(dim, keepdim=True).values
+    diffs = x-maxes
+    del x, maxes
+    x_exp = diffs.exp()
+    del diffs
+    x_exp_sum = x_exp.topk(k=k, dim=dim).values.sum(dim, keepdim=True)
+    quotient = x_exp/x_exp_sum
+    return quotient
+
+def resample_crude_softmax(x: torch.FloatTensor, k: int, dim=-1) -> torch.FloatTensor:
+    """
+    Softmax with a modified denominator. for each query token: resamples key dimension to size k; you can use this to increase/decrease denominator to the magnitude on which the model was trained.
+    I think the results were bad, but can't really remember.
+    """
+    maxes = x.max(dim, keepdim=True).values
+    diffs = x-maxes
+    del maxes
+    x_exp = diffs.exp()
+    diffs_resampled = torch.nn.functional.interpolate(diffs, scale_factor=k/diffs.size(-1), mode='nearest-exact', antialias=False)
+    del diffs
+    diffs_exp_sum = diffs_resampled.exp().sum(dim, keepdim=True)
+    del diffs_resampled
+    quotient = x_exp/diffs_exp_sum
+    return quotient
 
 
 @maybe_allow_in_graph
@@ -47,6 +92,14 @@ class Attention(nn.Module):
         bias (`bool`, *optional*, defaults to False):
             Set to `True` for the query, key, and value linear layers to contain a bias parameter.
     """
+
+    is_self_attention: bool
+    # if you receive a key whose length differs from those in the training distribution:
+    # softmax averaging will have a different-than-expected denominator and likewise attention probabilities.
+    # this property can be assigned from outside the Unet, to help us decide how to adjust the softmax result
+    # to bring it back into distribution.
+    key_length_factor = 1.
+    sigma: Optional[float] = None
 
     def __init__(
         self,
@@ -74,6 +127,7 @@ class Attention(nn.Module):
     ):
         super().__init__()
         inner_dim = dim_head * heads
+        self.is_self_attention = cross_attention_dim is None
         cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
         self.upcast_attention = upcast_attention
         self.upcast_softmax = upcast_softmax
@@ -368,11 +422,31 @@ class Attention(nn.Module):
             alpha=self.scale,
         )
         del baddbmm_input
+        # assert self.sigma is not None
+        # if self.is_self_attention:
+        #     makedirs('out_tensor', exist_ok=True)
+        #     qname = f'out_tensor/f{self.key_length_factor}_s{self.sigma:.4f}_k{key.size(-2)}_c{key.size(-1)}_q_proj.pt'
+        #     kname = f'out_tensor/f{self.key_length_factor}_s{self.sigma:.4f}_k{key.size(-2)}_c{key.size(-1)}_k_proj.pt'
+        #     if not exists(qname):
+        #         torch.save(query, qname)
+        #     if not exists(kname):
+        #         torch.save(key, kname)
 
         if self.upcast_softmax:
             attention_scores = attention_scores.float()
 
-        attention_probs = attention_scores.softmax(dim=-1)
+        if self.key_length_factor == 1.0:
+            # normal attention
+            attention_probs = attention_scores.softmax(dim=-1)
+        else:
+            # uncomment any of these alternative softmaxes to play with "bringing denominator back into distribution"
+            # attention_probs = attention_scores.softmax(dim=-1)
+            # attention_probs = softmax(attention_scores)
+            # attention_probs = attention_probs * self.key_length_factor
+            key_tokens = attention_scores.size(-1)
+            preferred_token_count = int(key_tokens/self.key_length_factor)
+            attention_probs = topk_softmax(attention_scores, k=preferred_token_count)
+            # attention_probs = resample_crude_softmax(attention_scores, k=preferred_token_count)
         del attention_scores
 
         attention_probs = attention_probs.to(dtype)
@@ -1117,6 +1191,9 @@ class AttnProcessor2_0:
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
+
+        if attn.key_length_factor != 1.:
+            hidden_states = hidden_states * attn.key_length_factor
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
