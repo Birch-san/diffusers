@@ -60,6 +60,10 @@ def topk_softmax(x: torch.FloatTensor, k: int, dim=-1) -> torch.FloatTensor:
     quotient = x_exp/x_exp_sum
     return quotient
 
+def kat_softmax_topk(x: torch.FloatTensor, k: int, dim=-1):
+    values, indices = torch.topk(x, k, dim=dim)
+    return torch.full_like(x, float("-inf")).scatter_(dim, indices, values).softmax(dim=dim)
+
 def resample_crude_softmax(x: torch.FloatTensor, k: int, dim=-1) -> torch.FloatTensor:
     """
     Softmax with a modified denominator. for each query token: resamples key dimension to size k; you can use this to increase/decrease denominator to the magnitude on which the model was trained.
@@ -445,7 +449,8 @@ class Attention(nn.Module):
             # attention_probs = attention_probs * self.key_length_factor
             key_tokens = attention_scores.size(-1)
             preferred_token_count = int(key_tokens/self.key_length_factor)
-            attention_probs = topk_softmax(attention_scores, k=preferred_token_count)
+            # attention_probs = topk_softmax(attention_scores, k=preferred_token_count)
+            attention_probs = kat_softmax_topk(attention_scores, k=preferred_token_count)
             # attention_probs = resample_crude_softmax(attention_scores, k=preferred_token_count)
         del attention_scores
 
