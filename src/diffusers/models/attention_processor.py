@@ -1226,8 +1226,8 @@ class AttnProcessor2_0:
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
 
-        if attn.key_length_factor != 1.:
-            hidden_states = hidden_states * attn.key_length_factor
+        # if attn.key_length_factor != 1.:
+        #     hidden_states = hidden_states * attn.key_length_factor
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
