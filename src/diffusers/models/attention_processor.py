@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Callable, Optional, Union
+from einops import rearrange
 
 import torch
 import torch.nn.functional as F
@@ -76,6 +77,29 @@ def resample_crude_softmax(x: torch.FloatTensor, k: int, dim=-1) -> torch.FloatT
     quotient = x_exp/diffs_exp_sum
     return quotient
 
+# by Katherine Crowson
+def make_neighbourhood_mask(h: int, w: int, h_orig: int, w_orig: int, device="cpu") -> torch.BoolTensor:
+    mask = torch.full((h, w, h, w), False)
+
+    for h_pos in range(h):
+        for w_pos in range(w):
+            if h_pos - h_orig//2 < 0:
+                start_h = 0
+            elif h_pos + h_orig//2 > h - 1:
+                start_h = h - h_orig
+            else:
+                start_h = h_pos - h_orig//2
+
+            if w_pos - w_orig//2 < 0:
+                start_w = 0
+            elif w_pos + w_orig//2 > w - 1:
+                start_w = w - w_orig
+            else:
+                start_w = w_pos - w_orig//2
+
+            mask[h_pos, w_pos, start_h : start_h + h_orig, start_w : start_w + w_orig] = True
+            
+    return mask.view(h * w, h * w).to(device)
 
 @maybe_allow_in_graph
 class Attention(nn.Module):
@@ -1186,6 +1210,16 @@ class AttnProcessor2_0:
         key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
+        if attn.key_length_factor != 1.0:
+            assert attention_mask is None
+            preferred_token_count = int(sequence_length/attn.key_length_factor)
+            # TODO: access aspect ratio. for now we just assume a square
+            current_h = current_w = int(sequence_length**.5)
+            preferred_h = preferred_w = int(preferred_token_count**.5)
+            attention_mask: torch.BoolTensor = make_neighbourhood_mask(current_h, current_w, preferred_h, preferred_w, device=query.device)
+            # broadcast over batch and head dims
+            attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
+        
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
         hidden_states = F.scaled_dot_product_attention(
