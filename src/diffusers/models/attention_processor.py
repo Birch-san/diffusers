@@ -105,6 +105,21 @@ def make_neighbourhood_mask(size: Dimensions, size_orig: Dimensions, device="cpu
 
     return mask.view(h * w, h * w)
 
+def make_wacky_bias(size: Dimensions, device="cpu") -> torch.FloatTensor:
+    h, w = size
+    h_ramp = torch.arange(h, device=device, dtype=torch.float16)
+    w_ramp = torch.arange(w, device=device, dtype=torch.float16)
+
+    hdist = h_ramp.reshape(1, 1, h, 1) - h_ramp.reshape(h, 1, 1, 1)
+    wdist = w_ramp.reshape(1, 1, 1, w) - w_ramp.reshape(1, w, 1, 1)
+    sq_dist = hdist**2 + wdist**2
+    dist = sq_dist**.5
+    log_dist = dist.log().clamp(min=0)
+    bias = log_dist
+    bias = bias.reshape(h*w, h*w)
+
+    return bias
+
 @maybe_allow_in_graph
 class Attention(nn.Module):
     r"""
@@ -1222,7 +1237,8 @@ class AttnProcessor2_0:
             preferred_h = preferred_w = int(preferred_token_count**.5)
             current_size = Dimensions(height=current_h, width=current_w)
             preferred_size = Dimensions(height=preferred_h, width=preferred_w)
-            attention_mask: torch.BoolTensor = make_neighbourhood_mask(size=current_size, size_orig=preferred_size, device=query.device)
+            # attention_mask: torch.BoolTensor = make_neighbourhood_mask(size=current_size, size_orig=preferred_size, device=query.device)
+            attention_mask: torch.FloatTensor = make_wacky_bias(size=current_size, device=query.device)
             # broadcast over batch and head dims
             attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
         
